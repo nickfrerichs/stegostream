@@ -1,0 +1,17 @@
+sudo apt install python3-pip
+# - don't need, used subprocess, pip3 install ffmpeg-python
+python3 -m pip install --force-reinstall https://github.com/yt-dlp/yt-dlp/archive/master.tar.gz
+
+sudo add-apt-repository ppa:obsproject/obs-studio
+sudo apt update
+sudo apt install ffmpeg obs-studio
+
+
+## Requirements
+- pip3 install opencv-python
+- pip3 install crcmod
+
+
+OBS studio
+- Configure youtube live stream (stream key)
+- Add source: window capture
