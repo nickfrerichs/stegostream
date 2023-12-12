@@ -477,48 +477,5 @@ class LockVar():
         with self.lock:
             return copy.deepcopy(self.var)
 
-
-# class SharedVar():
-#     def __init__(self, var):
-#         self.var = var
-#         self.lock = threading.Lock()
-
-#     def get(self):
-#         with self.lock:
-#             return self.var
-
-#     def set(self, newVar):
-#         with self.lock:
-#             self.var = newVar
-
-# class SharedDict():
-#     def __init__(self, var):
-#         self.var = var
-#         self.lock = threading.Lock()
-
-#     def get(self, key):
-#         with self.lock:
-#             self.var[key]
-
-#     def set(self, key, val):
-#         with self.lock:
-#             self.var[key] = val
-
-
-# class SharedDict2():
-#     def __init__(self, var):
-#         self.var = var
-#         self.lock = threading.Lock()
-
-#     def get(self, key, key2):
-#         with self.lock:
-#             self.var[key][key2]
-
-#     def set(self, key, key2, val):
-#         with self.lock:
-#             self.var[key][key2] = val
-
-#     def getDict(self):
-#         with self.
         
 
