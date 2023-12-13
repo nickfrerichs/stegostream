@@ -1,18 +1,18 @@
 import os, sys, glob
-import cv2
 import lib.stegocodecs.rgb_grid
-import lib.stegostream
+import lib.peerconnection
+import lib.videostream
 import time
 import threading
-import config
+from lib.config import Config
 
-videoStream = lib.stegostream.VideoStream(lib.stegocodecs.rgb_grid.Codec, config)
-conn = lib.stegostream.PeerConnection(videoStream)
+config = Config()
+videoStream = lib.videostream.VideoStream(config.video_url, lib.stegocodecs.rgb_grid.Codec)
+conn = lib.peerconnection.PeerConnection(videoStream)
 
 def main():
     
     purge_temp_files()
-
     # Create a daemon thread
     input_thread = threading.Thread(target=user_input_thread, daemon=True)
 
@@ -28,13 +28,13 @@ def user_input_thread():
 
         status = conn.getStatus()
         user_input = input(status+"> ")
-        if user_input.startswith("initrecv "):
-            video_url = user_input.split(" ",1)[1]
-            video_url = config.video_url
-            conn.initrecv(video_url)
+        # if user_input.startswith("initrecv "):
+        #     conn.initrecv()
 
-        if user_input.startswith("initsend"):
+        if user_input.startswith("init"):
             conn.initsend()
+            time.sleep(2)
+            print("\n\n")
 
         if user_input.startswith("send "):
             data = user_input.split(" ",1)[1]
@@ -44,7 +44,7 @@ def user_input_thread():
             conn.connect()
 
         if user_input.startswith("status"):
-            conn.printStatus()
+            conn.printStatus(True)
 
 
 def purge_temp_files():
