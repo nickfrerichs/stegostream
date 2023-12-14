@@ -7,6 +7,7 @@ import copy
 from collections import OrderedDict
 from .lockvar import LockVar
 from .textmessage import IncomingTextMessage, OutgoingTextMessage
+from .flags import Flags
 
 
 class PeerConnection:
@@ -19,20 +20,21 @@ class PeerConnection:
         # 2 Channels so text and data transfers can happen simultaneously
         self.seq = LockVar({1:0, 2:0})
         self.ack = LockVar({1:0, 2:0})
+        self.resend = LockVar({1:set(),2:set()})
         self.send_buffer = LockVar({1:Buffer(), 2:Buffer()})
         self.recv_buffer = LockVar({1:{}, 2:{}})
         self.buffer_threads = {}
 
     def initrecv(self):
         self.videoStream.initRecv()
-        for attempt in range(30):
+        for attempt in range(60):
             print("Waiting for video stream... "+str(attempt))
             status = self.videoStream.getStatus()
             if status == "STREAM UP":
                 self.recvMessagesThread = threading.Thread(target=self.__recvMessagesWorker, name="recvMessages")
                 self.recvMessagesThread.start()
                 return
-            time.sleep(2)
+            time.sleep(5)
 
     def initsend(self):
         if self.sendStreamUp():
@@ -41,7 +43,6 @@ class PeerConnection:
         self.videoStream.initSend()
         time.sleep(1)
         self.initrecv()
-
 
     
     ## ============================================================================================================================
@@ -52,17 +53,18 @@ class PeerConnection:
         print(self.conn_status.get())
 
     # Method to check the flags and handle extablishing a connection
-    def __checkFlags(self, flag):
-
-        if self.conn_status.get() == Status.NONE and flag == Flags.SYN:
+    def __checkFlags(self, flags):
+        print(self.conn_status.get())
+        print(flags)
+        if self.conn_status.get() == Status.NONE and Flags.is_only_set(flags,Flags.SYN):
             self.__setConnStatus(Status.SYN_RECV)
             connectThread = threading.Thread(target=self.__connect, name="ServerConnect")
             connectThread.start()
 
-        if self.conn_status.get() == Status.SYN_SEND and flag == Flags.SYN_ACK:
+        if self.conn_status.get() == Status.SYN_SEND and Flags.is_set(flags, (Flags.SYN, Flags.ACK)):
             self.__setConnStatus(Status.SYN_ACK_RECV)
 
-        if self.conn_status.get() == Status.SYN_ACK_SEND and flag == Flags.ACK:
+        if self.conn_status.get() == Status.SYN_ACK_SEND and Flags.is_only_set(flags, Flags.ACK):
             self.__setConnStatus(Status.ACK_RECV)
 
 
@@ -83,22 +85,22 @@ class PeerConnection:
             print("BEGIN HANDSHAKE")
             
             # Send SYN flag, wait for SYN ACK
-            bin_flag = Flags.set(Flags.SYN)
-            self.__send_data(None, 0, bin_flag)
+            bin_flag = Flags.get_bin(Flags.SYN)
+            self.__send_control_message(bin_flag)
             self.__setConnStatus(Status.SYN_SEND)
             
             for attempt in range(30):
                 if self.conn_status.get() == Status.SYN_ACK_RECV:
-                    bin_flag = Flags.set(Flags.ACK)
-                    self.__send_data(None, 0, bin_flag)
+                    bin_flag = Flags.get_bin(Flags.ACK)
+                    self.__send_control_message(bin_flag)
                     self.__setConnStatus(Status.ACK_SEND)
                     self.__setConnStatus(Status.CONNECTED)
                     break
                 time.sleep(2)
         # This path is followed if a SYN flag was received to initialize a connection
         elif self.conn_status.get() == Status.SYN_RECV:
-            bin_flag = Flags.set(Flags.SYN_ACK)
-            self.__send_data(None, 0, bin_flag)
+            bin_flag = Flags.get_bin((Flags.SYN, Flags.ACK))
+            self.__send_control_message(bin_flag)
             # Mark as connected??
             self.__setConnStatus(Status.SYN_ACK_SEND)
             for attempt in range(30):
@@ -139,6 +141,10 @@ class PeerConnection:
 
         # one byte for channel, one byte for flags, two bytes for ack, two bytes for seq, and the rest for binary_data
         header_length = 6
+        # For now, add some time to avoid reading images from previous session
+        
+        time.sleep(20)
+        print("Starting connection listener")
         while True:
             # Get binary data
             try:
@@ -146,11 +152,12 @@ class PeerConnection:
             except queue.Empty:
                 continue
             format_string = '>BBHH{}s'.format(len(raw_message)-header_length)
-           # if len(raw_message) < 6: continue
+
             try:
             # Unpack binary data into headers and data
             
-                channel, flag, ack, seq, data = struct.unpack(format_string, raw_message)
+                channel, flags, ack, seq, data = struct.unpack(format_string, raw_message)
+                flags = flags.to_bytes(1,byteorder='big')
             except struct.error:
                 print("Error unpacking stuct")
                 print("Raw Message: "+str(raw_message))
@@ -158,18 +165,16 @@ class PeerConnection:
 
             # Channel 0 is used for establishing a connection
             if channel == 0:
-                self.__checkFlags(flag)
+                self.__checkFlags(flags)
 
             if self.conn_status.get() != Status.CONNECTED:
                 continue
 
-            # with self.ack.lock:
-            #     self.ack.var[channel] = ack
-
-            if channel > 0:
+            # Ignore things where we already have the ack
+            if channel > 0 and seq >= self.ack.get()[channel]:
                 # Save the received data to the buffer
                 with self.recv_buffer.lock:
-                    self.recv_buffer.var[channel][seq] = data
+                    self.recv_buffer.var[channel][seq] = (data, flags)
 
             
             #except struct.error:
@@ -202,23 +207,57 @@ class PeerConnection:
             # The 'ack' now represents the highest contiguous sequence number
             return ack
 
+        # Initialize the ack to 1
+        with self.ack.lock:
+            self.ack.var[channel] = 1
+
         while True:
             purge_buffer = False
             # Determine what the "ack" should be set to based on how many contiguous packets are in the recv_buffer
-            with self.ack.lock:
-                self.ack.var[channel] = calculateAck(channel)
+            # with self.ack.lock:
+            #     max_ack = calculateAck(channel)
 
+            msg = None
             with self.recv_buffer.lock, self.ack.lock:
-                for b in self.recv_buffer.var[channel]:
-                    # Skip if out of order
-                    if b > self.ack.var[channel]:
+                for seq in sorted(self.recv_buffer.var[channel]):
+                    
+                    # If the seqence is less than the ack, we've already processed it
+                    if seq < self.ack.var[channel]:
+                        print(str(seq)+" is less than "+str(self.ack.var[channel]))
                         continue
 
+                    # If out of order, add seq numbers in the gap to the resend set and continue to next
+                    if seq > self.ack.var[channel]:
+                        print(str(seq)+" is greater than "+str(self.ack.var[channel]))
+                        with self.resend.lock:
+                            missing_set = set([seq - i for i in range(1, seq - self.ack.var[channel])])
+                            self.resend.var[channel].update({missing_set})
+                        continue
+                    print(str(seq)+" is being processed.")
+                    # If not out of order, update the ack and continue processing the data
+                    self.ack.var[channel] += 1
+
+                    data, flags = self.recv_buffer.var[channel][seq]
+
+                    print("Channel: "+str(channel))
+                    print("Flags: "+str(flags))
+                    print(type(flags))
+
                     if channel == 1:
-                        text = self.recv_buffer.var[channel][b].decode('utf-8')
-                        print(text)
+                        print("New Text Message")
+                        # If this is a new textmessage, create a new incoming message
+                        if Flags.is_set(flags,Flags.START_DATA):
+                            msg = IncomingTextMessage()
+                        msg.receive_chunk(data)
+
+                        if Flags.is_set(flags,Flags.END_DATA):
+                            print(msg.decompress_message())
+                            msg = None
+
+                        # text = self.recv_buffer.var[channel][seq].decode('utf-8')
+                        # print(text)
                     purge_buffer = True
-            time.sleep(1)
+            time.sleep(.25)
 
             # Clear buffer for this channel up to the ack number, thank ChatGPT for the one-liner
             if purge_buffer:
@@ -245,19 +284,14 @@ class PeerConnection:
         while True:
 
             with self.send_buffer.lock:
-                for channel, message in self.send_buffer.var.items():
-                    try:
-                        (message, seq, last) = channel.queue.get_nowait()
-                        bin_flag = Flags.set(Flags.NONE)
-
-                        if channel == 0:
-                            data = channel.to_bytes(1, byteorder='big')+bin_flag + channel.to_bytes(2, byteorder='big') + channel.to_bytes(2, byteorder='big') + message
-                        elif channel > 0:
-                            with self.seq.lock, self.ack.lock:
-                                data = channel.to_bytes(1, byteorder='big')+bin_flag + self.ack.var[channel].to_bytes(2, byteorder='big') + self.seq.var[channel].to_bytes(2, byteorder='big') + message
-                        self.videoStream.send(data)
-                    except queue.Empty:
-                        pass
+                channel1_q = self.send_buffer.var[1].queue
+                channel = 1
+                while not channel1_q.empty():
+                    message, seq, bin_flags = channel1_q.get()
+                    with self.seq.lock, self.ack.lock:
+                        data = channel.to_bytes(1, byteorder='big')+bin_flags + self.ack.var[channel].to_bytes(2, byteorder='big') + seq.to_bytes(2, byteorder='big') + message
+                    # videoStream will queue sending, one goes out every 2 seconds
+                    self.videoStream.send(data)
 
                     # Purge buffer up until last_ack by peer
             time.sleep(.1)
@@ -266,27 +300,39 @@ class PeerConnection:
     def send_text(self, text):
 
         msg = OutgoingTextMessage(text,50)
-
+        print("Chunk Count: "+str(msg.chunk_count))
         for index in range(msg.chunk_count):
-            chunk = msg.get_next_chunk()
-            flag = Flags.set(Flags.NONE)
+            bin_chunk = msg.get_next_chunk()
+            bin_flags = Flags.get_bin(Flags.NONE)
+            if index == 0:
+                print("Start_Data")
+                bin_flags = Flags.get_bin(Flags.START_DATA, bin_flags)
             if index == msg.chunk_count - 1:
-                flag = Flags.set(Flags.END_DATA)
-            self.__queue_message(chunk,1,flag)
+                print("End_Data")
+                bin_flags = Flags.get_bin(Flags.END_DATA, bin_flags)
+            self.__queue_message(bin_chunk,1,bin_flags)
             
 
     # When messages are queued:
     # - Add to buffer
-    def __queue_message(self, binary_data, channel, bin_flag = None):
+    def __queue_message(self, binary_data, channel, bin_flags = None):
         if binary_data is None:
             binary_data = "".encode("utf-8")
 
-        if bin_flag is None:
-            bin_flag = Flags.set(Flags.NONE)
+        if bin_flags is None:
+            bin_flags = Flags.get_bin(Flags.NONE)
 
         with self.send_buffer.lock, self.seq.lock:
             self.seq.var[channel] += 1
-            self.send_buffer.var[channel].add_message(binary_data, 1, bin_flag)
+            self.send_buffer.var[channel].add(binary_data, 1, bin_flags)
+
+    # Control messages always on channel 1, are not buffered
+    def __send_control_message(self, bin_flag, message=None):
+        message = "".encode("utf-8")
+        channel = 0
+        data = channel.to_bytes(1, byteorder='big')+bin_flag + channel.to_bytes(2, byteorder='big') + channel.to_bytes(2, byteorder='big') + message
+        self.videoStream.send(data)
+        
 
 
     ## ===============================
@@ -307,7 +353,7 @@ class PeerConnection:
         print("conn_status: "+str(self.conn_status.get()))
         print("seq: "+str(self.seq.get()))
         print("ack: "+str(self.ack.get()))
-        print("send_buffer: "+"1: "+str(len(self.send_buffer.get()[1].queue.qsize()))+" 2: "+str(len(self.send_buffer.get()[2].queue.qsize())))
+        print("send_buffer: "+"1: "+str(self.send_buffer.var[1].queue.qsize())+" 2: "+str(self.send_buffer.var[2].queue.qsize()))
         print("recv_buffer: "+"1: "+str(len(self.recv_buffer.get()[1]))+" 2: "+str(len(self.recv_buffer.get()[2])))
 
         if verbose:
@@ -343,32 +389,18 @@ class Status(Enum):
     CONNECTED = 7
 
     
-class Flags:
-    NONE = 0
-    SYN = 1
-    ACK = 2
-    SYN_ACK = 3
-    END_DATA = 4   
-    FLAG_E = 5  
-    FLAG_F = 6  
-    FLAG_G = 7
-
-    @staticmethod
-    def set(flag):
-        return flag.to_bytes(1, byteorder='big')
 
 
 
 class Buffer:
 
-
     def __init__(self):
         self.buffer = {}
         self.queue = queue.Queue()
     
-    def add_message(self, data, seq, last=False):
-        self.queue.put((data, seq, last))
-        self.buffer[seq] = data
+    def add(self, bin_data, seq, bin_flags):
+        self.queue.put((bin_data, seq, bin_flags))
+        self.buffer[seq] = bin_data
 
     def get_message(self, index):
         return self.buffer[index]
