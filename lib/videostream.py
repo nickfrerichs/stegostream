@@ -12,6 +12,7 @@ config = Config()
 
 FFMPEG = "/usr/bin/ffmpeg"
 BMP_FILES_PATH = "./temp"
+DEBUG_FILES_PATH = "./debug"
 
 class VideoStream:
 
@@ -32,6 +33,8 @@ class VideoStream:
         self.last_valid_image_time = LockVar(0)
         self.status = "INITALIZING"
         self.stats = LockVar(VideoStreamStats())
+        self.stream_nonce = None
+        self.stream_nonce_match = False
 
 
     # Perform everything needed to connect to an inbound video stream
@@ -74,8 +77,8 @@ class VideoStream:
             with self.stats.lock:
                 self.stats.var.recv_backlog = len(files)
             for f in files:
-                start = time.time()
-                new_data = True
+                start_time = time.time()
+
                 if ".bmp" not in f:
                     continue
                 time.sleep(.1)
@@ -88,59 +91,76 @@ class VideoStream:
                     self.stats.var.recv_total+=1
                     if is_valid:
                         self.stats.var.recv_valid+=1
-
                     else:
-                        self.stats.var.recv_invalid+=1
+                        self.stats.var.recv_crc_fail+=1
 
                     self.last_valid_image_time.set(time.time())
-                #self.codec.debug(is_valid, msg_data, data, image, total)
-                # os.remove(file_path)
+
+                # Get the stream_nonce from the packet
+                try:
+                    stream_nonce =(msg_data[:1])
+                except IndexError:
+                    self.__clean_up_recv_image(file_path, start_time)
+                    continue
+
+                if self.stream_nonce != stream_nonce:
+                    with self.stats.lock:
+                        self.stats.var.recv_nonce_fail+=1
+                    self.__clean_up_recv_image(file_path, start_time)
+                    continue
+                elif self.stream_nonce_match == False:
+                    self.stream_nonce_match = True
 
                 if self.last_msg == msg_data:
-                    new_data = False
-
+                    self.__clean_up_recv_image(file_path, start_time)
+                    continue
                 
-                if new_data:
-                    # Remove the nonce that helps resends appear new
-                    msg_data = msg_data[1:]
-
-                    with self.stats.lock:
-                        self.stats.var.recv_new+=1
-                    if os.path.exists(os.path.join(BMP_FILES_PATH,"done")) == False:
-                        os.makedirs(os.path.join(BMP_FILES_PATH,"done"))
-                    shutil.move(file_path,os.path.join(BMP_FILES_PATH,"done",f))
-
-                    self.recv_q.put(msg_data)
-
-                    self.last_msg = msg_data
-                    self.last_new_image.set(image)
-                    self.last_new_image_time.set(time.time())
-                    
-                else:
-                    os.remove(file_path)
+                self.last_msg = msg_data
+                # Remove the stream nonce and the nonce that helps resends appear new
+                msg_data = msg_data[2:]
+                
                 with self.stats.lock:
-                    self.stats.var.recv_time += time.time()-start
-            #   print("Accuracy: "+str(round((correct/total)*100,2))+" - "+str(correct)+"/"+str(total)+"          Duration: "+str(duration)+"s")
+                    self.stats.var.recv_new+=1
+
+                self.recv_q.put(msg_data)
+                self.__clean_up_recv_image(file_path, start_time)
+                self.write_debug_image(image, f)
+                self.last_new_image.set(image)
+                self.last_new_image_time.set(time.time())
+                    
                 time.sleep(.05)
                 self.__setStatus()
+    def __clean_up_recv_image(self, file_path, start_time, out_file_path=None):
+        if out_file_path:
+            out_dir, f = os.path.split(out_file_path)
+            if os.path.exists(out_dir) == False:
+                os.makedirs(out_dir)
+            shutil.move(file_path,out_file_path)
+        else:
+            os.remove(file_path)
+
+        with self.stats.lock:
+            self.stats.var.recv_time += time.time()-start_time
+
 
 
     # Perform everything needed to establish an outbound video stream
-    def initSend(self):
+    def initSend(self, nonce_int):
+        self.stream_nonce = self.get_nonce(nonce_int)
         self.sendThread = threading.Thread(target=self.__sendThread, name="Thread-1")
         self.sendThread.start()
 
 
     def __sendThread(self):
         last_image = None
-        image = self.codec.encode(str(self.get_nonce()).encode('utf-8'))
+        image = self.codec.encode(self.stream_nonce)
         while True:
             start = time.time()
             # Receive binary data from the queue, convert to encoded image
             try:
                 data = self.send_q.get_nowait()
                 
-                image = self.codec.encode(self.get_nonce()+data)
+                image = self.codec.encode(self.stream_nonce+self.get_nonce()+data)
                 with self.stats.lock:
                     self.stats.var.send_total+=1
             except queue.Empty:
@@ -163,13 +183,18 @@ class VideoStream:
 
     def __setStatus(self):
         if (self.recvThread and self.recvThread.is_alive() and self.ffmpeg_subprocess 
-                and self.sendThread and self.sendThread.is_alive() and self.last_msg != None):
+                and self.sendThread and self.sendThread.is_alive() and self.last_msg != None and self.stream_nonce_match):
             self.status = "STREAM UP"
 
     def getStatus(self):
         self.__setStatus()
         return self.status
     
+    def write_debug_image(self, image, name):
+        if os.path.exists(DEBUG_FILES_PATH) == False:
+            os.makedirs(DEBUG_FILES_PATH)
+        cv2.imwrite(os.path.join(DEBUG_FILES_PATH, name), image)
+
     def displayLastImage(self):
         image = self.last_new_image.get()
 
@@ -180,8 +205,10 @@ class VideoStream:
             print("Displaying image from last valid packet")
             subprocess.run(['xdg-open', temp_image_path])
 
-    def get_nonce(self):
-        return random.randint(0, 255).to_bytes(1, byteorder='big')
+    def get_nonce(self, val=None):
+        if val is None:
+            val = random.randint(0, 255)
+        return val.to_bytes(1, byteorder='big')
 
 class VideoStreamStats:
     def __init__(self):
@@ -190,6 +217,7 @@ class VideoStreamStats:
         self.recv_total = 0
         self.recv_time = 0
         self.recv_valid = 0
-        self.recv_invalid = 0
+        self.recv_crc_fail = 0
         self.recv_new = 0
         self.recv_backlog = 0
+        self.recv_nonce_fail = 0

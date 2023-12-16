@@ -8,7 +8,7 @@ class Flags:
     SYN_ACK = 3
     START_DATA = 4
     END_DATA = 5   
-    RESEND = 6  
+    MAINT = 6  
     FLAG_F = 7  
 
     @staticmethod

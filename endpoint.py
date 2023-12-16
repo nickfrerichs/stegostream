@@ -32,7 +32,15 @@ def user_input_thread():
         #     conn.initrecv()
 
         if user_input.startswith("init"):
-            conn.initsend()
+            try:
+                nonce = user_input.split(" ",1)[1]
+            except:
+                print("You must specify a numeric value 0-255")
+                continue
+            if nonce.isdigit() == False:
+                print("You must specify a numeric value 0-255")
+                continue
+            conn.initsend(int(nonce))
             time.sleep(2)
             print("\n\n")
 
@@ -46,9 +54,12 @@ def user_input_thread():
         if user_input.startswith("status"):
             conn.printStatus(True)
 
+        if user_input.startswith("last_image"):
+            conn.displayLastImage()
+
 
 def purge_temp_files():
-    locations = ["./temp/*.bmp", "./temp/debug_images/*.bmp", "./temp/done/*.bmp"]
+    locations = ["./temp/*.bmp", "./temp/debug_images/*.bmp", "./temp/done/*.bmp", "./debug/*.bmp"]
 
     for location in locations:
         bmp_files = glob.glob(location)

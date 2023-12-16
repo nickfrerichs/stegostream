@@ -73,7 +73,7 @@ class Codec:
             cv2.imwrite(os.path.join(DEBUG_IMAGE_PATH, "debug_image.bmp"),image)
         for i in range(0, cols):
             for j in range(0, rows):
-                name = str(i)+"_"+str(j)
+                box_name = str(i)+"_"+str(j)
                 x1 = (i*offset)+2
                 x2 = ((i+1)*offset)-(gap_size+2)
                 y1 = (j*offset)+2
@@ -88,7 +88,7 @@ class Codec:
                 b = min(self.map_range, key=lambda x: abs(x - rgb[2]))
                 if (r == 255 and g == 255 and b == 255) == False:
                     if self.debug_mode:
-                        cv2.imwrite(os.path.join(DEBUG_IMAGE_PATH, name+"_debug_box.bmp"),box)
+                        cv2.imwrite(os.path.join(DEBUG_IMAGE_PATH, box_name+"_debug_box.bmp"),box)
                     index = ("(%d, %d, %d)") % (r, g, b)
                     try:
                         raw_data+=(self.decode_map[index])
@@ -143,7 +143,7 @@ class Codec:
         offset = box_size+gap_size
         path = DEBUG_IMAGE_PATH
         if name:
-            path = os.path.join(DEBUG_IMAGE_PATH,name)
+            path = os.path.join(DEBUG_IMAGE_PATH,name.split(".")[0])
         if os.path.exists(path) == False:
             os.makedirs(path)
         cv2.imwrite(os.path.join(path, "debug_image.bmp"),image)
