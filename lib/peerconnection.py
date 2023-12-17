@@ -20,6 +20,7 @@ class PeerConnection:
         # 2 Channels so text and data transfers can happen simultaneously
         self.seq = LockVar({1:1, 2:1})
         self.ack = LockVar({1:1, 2:1})
+        self.peer_ack = LockVar({1:0, 2:0})
         self.resend = LockVar({1:list(),2:list()})
         self.missing = LockVar({1:set(),2:set()})
         self.send_buffer = LockVar({1:Buffer(1), 2:Buffer(2)})
@@ -168,6 +169,8 @@ class PeerConnection:
                 print("Raw Message: "+str(raw_message))
                 print("Length: "+str(len(raw_message)))
                 continue
+            with self.peer_ack.lock:
+                self.peer_ack.var[channel] = ack
 
             # Channel 0 is used for establishing a connection
             if channel == 0 and self.conn_status.get() != Status.CONNECTED:
@@ -183,6 +186,8 @@ class PeerConnection:
                     # format_string = '>BH{}i'.format((len(data) - 1) // 4)
                     format_string = '>BH{}i'.format((len(data) - 1) // struct.calcsize('i'))
                     channel, ack, *resend_list = struct.unpack(format_string, data)
+                    with self.peer_ack.lock:
+                        self.peer_ack.var[channel] =  ack
                     if len(resend_list) > 0:
                         print ("Got MAINT packet with resends - channel: "+str(channel)+", ack "+str(ack)+" resend: "+str(resend_list))
                     if not resend_list:  # Check if resend_list is empty
@@ -196,23 +201,20 @@ class PeerConnection:
                 # If the ack specified is less than the current syn, it means the peer never received that, but may not know it was sent. Resend it
                 with self.ack.lock,  self.seq.lock, self.resend.lock:
                     last_seq = self.seq.var[channel]-1
-                    print ("Got MAINT packet - channel: "+str(channel)+", ack "+str(ack)+" resend: "+str(resend_list)+", last_seq: "+str(last_seq))
+                ###    print ("Got MAINT packet - channel: "+str(channel)+", ack "+str(ack)+" resend: "+str(resend_list)+", last_seq: "+str(last_seq))
                     if ack <= last_seq and len(self.resend.var[channel]) == 0:
                         # Could resend everything from ack to seq incase they missed multiple
-                        print("Ack: "+str(ack))
-                        print("Seq: "+str(self.seq.var[channel]))
-                        print("Last_seq: "+str(last_seq))
                         self.resend.var[channel].append(last_seq)
-                        print("Resending possibly unknown lost seq "+str(last_seq))
+
                 continue
             
             if channel == 0:
                 print("An unexpected Channel 0 packet was received: "+str(raw_message))
 
             # Randomly miss an incoming packet to test resending
-            if random.random() < .25:
-                print("Whoops, "+str(seq)+" was dropped.")
-                continue
+            # if random.random() < .25:
+            #     print("Whoops, "+str(seq)+" was dropped.")
+            #     continue
 
             
             # Ignore things where we already have the ack
@@ -360,9 +362,12 @@ class PeerConnection:
                 # Send out any requested missing packets and empty the resend list
                 resend_count = 0
 
-                with self.resend.lock:
+                with self.resend.lock, self.peer_ack.lock:
                     if len(self.resend.var[1]) > 0:
                         for syn in self.resend.var[1]:
+                            if syn < self.peer_ack.var[channel]:
+                                continue
+                            print(self.send_buffer.var[1].buffer)
                             buffer_data = self.send_buffer.var[1].buffer[syn]
                             self.videoStream.send(buffer_data)
                             print("Resend "+str(syn))
@@ -372,13 +377,16 @@ class PeerConnection:
                         print("Emptied resend list")
 
 
-                    # Purge buffer up until last_ack by peer
+            # Purge buffer up until last_ack by peer
+            with self.send_buffer.lock, self.peer_ack.lock:
+                self.send_buffer.var[channel].purge_buffer(self.peer_ack.var[channel])
+                    
             time.sleep(.1)
 
 
     def send_text(self, text):
 
-        msg = OutgoingTextMessage(text,10)
+        msg = OutgoingTextMessage(text,100)
         print("Chunk Count: "+str(msg.chunk_count))
         for index in range(msg.chunk_count):
             print("Chunk index: "+str(index))
@@ -452,6 +460,7 @@ class PeerConnection:
             print("Recv valid: "+str(video_stream_stats.recv_valid))
             print("Recv invalid: "+str(video_stream_stats.recv_nonce_fail))
             print("Recv new: "+str(video_stream_stats.recv_new))
+            print("Send buffer: "+str(self.send_buffer.var[1].buffer))
             
 
     def displayLastImage(self):
@@ -505,6 +514,6 @@ class Buffer:
     def get_next_message(self):
         return self.queue.get()
     
-    def purge_buffer(self):
-        pass
+    def purge_buffer(self, ack):
+        self.buffer = {key: value for key, value in self.buffer.items() if key >= ack}
         
