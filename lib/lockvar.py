@@ -8,6 +8,10 @@ class LockVar():
     def set(self, val):
         with self.lock:
             self.var = val
+    
+    def set_index(self, index, val):
+        with self.lock:
+            self.var[index] = val
 
     def get(self):
         with self.lock:

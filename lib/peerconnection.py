@@ -1,3 +1,4 @@
+import sys
 import threading, queue
 import time
 import multiprocessing
@@ -6,13 +7,15 @@ import struct
 import copy
 import random
 from .lockvar import LockVar
-from .textmessage import IncomingTextMessage, OutgoingTextMessage
+from .sendtext import IncomingTextMessage, OutgoingTextMessage
+from .sendfile import IncomingFile, OutgoingFile
 from .flags import Flags
 
 
 class PeerConnection:
 
-    def __init__(self, videoStream):
+    def __init__(self, videoStream, shared_input):
+        self.shared_input = shared_input
         self.videoStream = videoStream
         self.recvMessagesThread = None
         self.conn_status = LockVar(Status.NONE)
@@ -23,8 +26,9 @@ class PeerConnection:
         self.peer_ack = LockVar({1:0, 2:0})
         self.resend = LockVar({1:list(),2:list()})
         self.missing = LockVar({1:set(),2:set()})
-        self.send_buffer = LockVar({1:Buffer(1), 2:Buffer(2)})
+        self.send_buffer = LockVar({1:Buffer(1), 2:Buffer(2, 10)})
         self.recv_buffer = LockVar({1:{}, 2:{}})
+        self.channel_status = LockVar({1:[Status.NONE,None], 2:[Status.NONE,None]})
         self.buffer_threads = {}
 
     def initrecv(self):
@@ -112,7 +116,7 @@ class PeerConnection:
         # Connected, start all buffer threads to handle in/out packets
         if self.conn_status.get() == Status.CONNECTED:
             self.buffer_threads[1] = threading.Thread(target=self.__processRecvBufferWorker, args=(1,), name="RecvBufferThread1")
-            #self.buffer_threads[2] = threading.Thread(target=self.__processRecvBufferWorker, args=(2,), name="RecvBufferThread2")
+            self.buffer_threads[2] = threading.Thread(target=self.__processRecvBufferWorker, args=(2,), name="RecvBufferThread2")
             self.buffer_threads["send"] = threading.Thread(target=self.__processSendBufferWorker, name="SendBufferThread")
 
             for b in self.buffer_threads:
@@ -208,10 +212,12 @@ class PeerConnection:
 
                 continue
             
+            # This should not happen, but I'd like to know if it does
             if channel == 0:
                 print("An unexpected Channel 0 packet was received: "+str(raw_message))
+                continue
 
-            # Randomly miss an incoming packet to test resending
+            # FOR TESTING - Randomly miss an incoming packet to test resending
             # if random.random() < .25:
             #     print("Whoops, "+str(seq)+" was dropped.")
             #     continue
@@ -286,7 +292,8 @@ class PeerConnection:
                     self.ack.var[channel] += 1
                     print(str(seq)+" is being processed. Ack increased to "+str(self.ack.var[channel]))
                     data, flags = self.recv_buffer.var[channel][seq]
-
+                    purge_buffer = True
+                    # Channel 1 is for text messages to be displayed to the screen
                     if channel == 1:
                         # If this is a new textmessage, create a new incoming message
                         if Flags.is_set(flags,Flags.START_DATA):
@@ -301,8 +308,42 @@ class PeerConnection:
 
                         # text = self.recv_buffer.var[channel][seq].decode('utf-8')
                         # print(text)
-                    purge_buffer = True
+                            
+                    # Channel 2 is for receiving files and writing to disk
+                    if channel == 2:
+                        
+                        # File send request is received from peer, handle request and send ack, IncomingFile returned if success
+                        if self.channel_status.get()[channel][0] == Status.NONE and Flags.is_only_set(flags,Flags.SYN):
+                            incoming_file = self.__handle_file_request_from_peer(data, channel)
+                            if incoming_file == None:
+                                continue
+
+
+                        # Ack is received for a running __send_file thread
+                        if self.channel_status.get()[channel][0] == Status.SYN_SEND and Flags.is_only_set(flags,Flags.ACK):
+                            file_id, size = struct.unpack(f'!HQ', data)
+                            with self.channel_status.lock:
+                                self.channel_status.var[channel] = [Status.ACK_RECV, file_id]
+
+                        # If status is NONE at this point, the user canceled or declined to receive the file
+                        # if self.channel_status.get()[channel][0] == Status.NONE:
+                        #     incoming_file = None
+                        #     continue
+
+                        # If SYN_RECV, an out_path was provided, send an ACK
+
+
+                        # Somewhere, need to check if the file timer has expired and reset the whole thing
+
+                        if self.channel_status.get()[channel][0] == Status.FILE_RECV:
+                            self.__handle_file_recv_from_peer(data, incoming_file, flags)
+
+                
+
+                    
             time.sleep(.25)
+
+
             if maint_timer < time.time():
                 # check for resends and process
                 with self.missing.lock, self.ack.lock:
@@ -332,6 +373,51 @@ class PeerConnection:
 
 
 
+    def __handle_file_request_from_peer(self, data, channel):
+
+        file_id, size, in_name = struct.unpack(f'!HQ{len(data)-10}s', data)
+        # Request input from the user
+        incoming_file = None
+        input_id = random.randint(0, sys.maxsize)
+        self.shared_input.set_index("id",input_id)
+        self.shared_input.set_index("prompt", "Receive file from peer? Size: "+str(size/1024/1024)+" MB: "+", Name: "+str(in_name)+ "\nEnter valid path to receive file, or -N- to decline.\nPath: ")
+        # Wait for response by user
+        for attempt in range(30):
+            # Canceled by user
+            if self.shared_input.get()["id"] is None:
+                with self.channel_status.lock:
+                    self.channel_status.var[channel][0] = Status.NONE
+                return None
+
+            if self.shared_input.get()["id"] == input_id and self.shared_input.get()["response"] is not None:
+                with self.channel_status.lock:
+                    self.channel_status.var[channel][0] = Status.SYN_RECV
+                out_path = self.shared_input.get("response")
+                incoming_file = IncomingFile(out_path, file_id, 60)
+                
+            time.sleep(2)
+
+        if self.channel_status.get()[channel][0] == Status.SYN_RECV and incoming_file is not None:
+    
+            # Resend back an ACK packet with the file ID
+            bin_flags = Flags.get_bin(Flags.ACK)                           
+            file_binary_data = struct.pack(f'!HQ', file_id, size)
+            self.__queue_message(file_binary_data, channel, bin_flags)
+            with self.channel_status.lock:
+                self.channel_status.var[channel][0] = Status.FILE_RECV
+        return incoming_file
+
+
+    def __handle_file_recv_from_peer(self, data, incoming_file, flags):
+        # It is the start of a new compressed segment, flag = 1 for start of new segment
+        if  Flags.is_set(flags, [Flags.SYN, Flags.START_DATA]):
+            incoming_file.process_incoming_chunk(data, 1)
+        # It is the end of a compressed segment, flag = 2 for end of segment 
+        elif Flags.is_set(flags, [Flags.SYN, Flags.END_DATA]):
+            incoming_file.process_incoming_chunk(data, 2)
+        else:
+            incoming_file.process_incoming_chunk(data, 0)
+            
     ## ============================================================================================================================
     ## Send messages methods
     ## ============================================================================================================================
@@ -348,38 +434,40 @@ class PeerConnection:
         while True:
 
             with self.send_buffer.lock:
-                channel1_q = self.send_buffer.var[1].queue
-                channel = 1
+                # channel1_q = self.send_buffer.var[1].queue
+                # channel = 1
 
-                while not channel1_q.empty():
-                    message, seq, bin_flags = channel1_q.get()
-                    with self.seq.lock, self.ack.lock:
-                        data = channel.to_bytes(1, byteorder='big')+bin_flags + self.ack.var[channel].to_bytes(2, byteorder='big') + seq.to_bytes(2, byteorder='big') + message
-                    # videoStream will queue sending, one goes out every 2 seconds
-                    self.videoStream.send(data)
-                    print("Send: "+str(seq))
+                for channel in (1,2):
+                    channel_q = self.send_buffer.var[channel].queue
+                    while not channel_q.empty():
+                        message, seq, bin_flags = channel_q.get()
+                        with self.seq.lock, self.ack.lock:
+                            data = channel.to_bytes(1, byteorder='big')+bin_flags + self.ack.var[channel].to_bytes(2, byteorder='big') + seq.to_bytes(2, byteorder='big') + message
+                        # videoStream will queue sending, one goes out every 2 seconds
+                        self.videoStream.send(data)
+                        print("Send: "+str(seq))
 
-                # Send out any requested missing packets and empty the resend list
-                resend_count = 0
+                    # Send out any requested missing packets and empty the resend list
+                    resend_count = 0
 
-                with self.resend.lock, self.peer_ack.lock:
-                    if len(self.resend.var[1]) > 0:
-                        for syn in self.resend.var[1]:
-                            if syn < self.peer_ack.var[channel]:
-                                continue
-                            print(self.send_buffer.var[1].buffer)
-                            buffer_data = self.send_buffer.var[1].buffer[syn]
-                            self.videoStream.send(buffer_data)
-                            print("Resend "+str(syn))
-                            resend_count+=1
+                    with self.resend.lock, self.peer_ack.lock:
+                        if len(self.resend.var[1]) > 0:
+                            for syn in self.resend.var[1]:
+                                if syn < self.peer_ack.var[channel]:
+                                    continue
+                                print(self.send_buffer.var[1].buffer)
+                                buffer_data = self.send_buffer.var[1].buffer[syn]
+                                self.videoStream.send(buffer_data)
+                                print("Resend "+str(syn))
+                                resend_count+=1
 
-                        self.resend.var[1] = list()
-                        print("Emptied resend list")
+                            self.resend.var[1] = list()
+                            print("Emptied resend list")
 
 
-            # Purge buffer up until last_ack by peer
-            with self.send_buffer.lock, self.peer_ack.lock:
-                self.send_buffer.var[channel].purge_buffer(self.peer_ack.var[channel])
+                # Purge buffer up until last_ack by peer
+                with self.peer_ack.lock:
+                    self.send_buffer.var[channel].purge_buffer(self.peer_ack.var[channel])
                     
             time.sleep(.1)
 
@@ -399,6 +487,62 @@ class PeerConnection:
                 print("End_Data")
                 bin_flags = Flags.get_bin(Flags.END_DATA, bin_flags)
             self.__queue_message(bin_chunk,1,bin_flags)
+
+    def send_file(self, file_path):
+        # Start __send_file thread and pass sendfile object
+        outgoing_file = OutgoingFile(file_path)
+        if outgoing_file.exists() == False:
+            print("File not found: "+str(file_path))
+            return
+        threading.Thread(target=self.__send_file, args=(2,outgoing_file), name="sendFileThread").start()
+
+        print("Thread started for file "+file_path)
+
+
+    def __send_file(self, channel, file):
+        # Send a SYN flag packet to peer with filename and size on Channel 2
+        if self.channel_status.get()[channel][0] == Status.NONE:
+            print("In channel status == None")
+            bin_flags = Flags.get_bin(Flags.SYN)
+            filename_bytes = file.name.encode("utf-8")
+            # Pack the values into a binary object using struct
+            binary_data = struct.pack(f'!HQ{len(filename_bytes)}s', file.id, file.size, filename_bytes)
+
+            self.__queue_message(binary_data, channel, bin_flags)
+            print("Queued message to request send")
+            for attempt in range(30):
+                if self.channel_status.get()[channel][0] == Status.ACK_RECV and self.channel_status.get()[channel][1] == file.id:
+                    with self.channel_status.lock:
+                        self.channel_status.var[channel][0] = Status.FILE_SEND
+                        break
+                print("Waiting for ACK_RECV")
+                time.sleep(2)
+
+            if self.channel_status.get()[channel][0] == Status.FILE_SEND:
+                for flag, chunk in file.get_file_chunks():
+                    bin_flags = Flags.get_bin(Flags.NONE)
+                    if flag == 1:
+                        bin_flags = Flags.get_bin([Flags.SYN, Flags.START_DATA])
+                        # New segment
+                    elif flag == 2:
+                        bin_flags = Flags.get_bin([Flags.SYN, Flags.END_DATA])
+                        # End of segment
+                    
+                    self.__queue_message(chunk, channel, bin_flags)
+
+                    time.sleep(2)
+
+
+        #       # It is the start of a new compressed segment, flag = 1 for start of new segment
+        # if  Flags.is_set(flags, [Flags.SYN, Flags.START_DATA]):
+        #     incoming_file.process_incoming_chunk(data, 1)
+        # # It is the end of a compressed segment, flag = 2 for end of segment 
+        # elif Flags.is_set(flags, [Flags.SYN, Flags.END_DATA]):
+        #     incoming_file.process_incoming_chunk(data, 2)
+        # else:
+        #     incoming_file.process_incoming_chunk(data, 0)
+            
+        # pass
             
 
     # When messages are queued:
@@ -424,7 +568,6 @@ class PeerConnection:
         self.videoStream.send(data)
         
 
-
     ## ===============================
     ## Status and misc methods
     ## ===============================
@@ -436,6 +579,10 @@ class PeerConnection:
         if self.conn_status.get() == Status.CONNECTED:
             text ="CONNECTED"
         return text.ljust(12)
+
+    def set_channel_status(self,channel, status, msg=None):
+        with self.channel_status.lock:
+            self.channel_status.var[channel] = (status, msg)
 
     def printStatus(self, verbose=False):
 
@@ -491,16 +638,18 @@ class Status(Enum):
     ACK_SEND = 5
     ACK_RECV = 6
     CONNECTED = 7
-
-    
-
+    FILE_RECV = 8
+    FILE_SEND = 9
 
 
 class Buffer:
 
-    def __init__(self, channel):
+    def __init__(self, channel, queue_size=None):
         self.buffer = {}
-        self.queue = queue.Queue()
+        if queue_size:
+            self.queue = queue.Queue(maxsize=queue_size)
+        else:
+            self.queue = queue.Queue()
         self.channel = channel
         self.no_ack = 0
     

@@ -5,10 +5,13 @@ import lib.videostream
 import time
 import threading
 from lib.config import Config
+import lib.lockvar
 
 config = Config()
+shared_input = lib.lockvar.LockVar({"id":None, "prompt":None, "response":None})
 videoStream = lib.videostream.VideoStream(config.video_url, lib.stegocodecs.rgb_grid.Codec)
-conn = lib.peerconnection.PeerConnection(videoStream)
+conn = lib.peerconnection.PeerConnection(videoStream, shared_input)
+
 
 def main():
     
@@ -24,6 +27,7 @@ def main():
 
 
 def user_input_thread():
+
     while True:
 
         status = conn.getStatus()
@@ -56,6 +60,32 @@ def user_input_thread():
 
         if user_input.startswith("last_image"):
             conn.displayLastImage()
+
+        if user_input.startswith("send_file "):
+            filepath = user_input.split(" ",1)[1]
+            conn.send_file(filepath)
+            print("send_file called with "+filepath)
+
+
+        # If a child thread needs user input, it is asked here. N exits canceling the request
+        if shared_input.get()["id"] is not None and shared_input.get()["prompt"] is not None:
+            prompt = shared_input.get()["prompt"]
+            response = ""
+            while True:
+                response = input(prompt)
+                if len(response) > 0 and response.lower()[0] == "n":
+                    with shared_input.lock:
+                        shared_input.var = {"id":None, "prompt":None, "response":None}
+                    break
+
+                dir_path = os.path.dirname(response)
+                if response != "" and os.path.exists(dir_path):
+                    with shared_input.lock:
+                        shared_input.var["response"] = response
+                    break
+
+        time.sleep(.1)
+
 
 
 def purge_temp_files():

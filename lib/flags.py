@@ -5,11 +5,11 @@ class Flags:
     NONE = 0
     SYN = 1
     ACK = 2
-    SYN_ACK = 3
-    START_DATA = 4
-    END_DATA = 5   
-    MAINT = 6  
-    FLAG_F = 7  
+    START_DATA = 3
+    END_DATA = 4
+    MAINT = 5   
+    MOD = 6  #OPTION, SHIFT, MODIFIER, MOD, SWITCH
+    FIN = 7  
 
     @staticmethod
     def get_bin(flags, flags_byte=None):
