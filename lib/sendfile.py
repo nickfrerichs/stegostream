@@ -27,17 +27,21 @@ class OutgoingFile(BaseFile):
         super().__init__(file_path)
 
 
-    def get_file_chunks(self, chunk_size=20):
+    def get_file_chunks(self, chunk_size=100):
         for segment in self.__get_file_segments():
-            compressed_segment = zlib.compress(segment.encode())
+            compressed_segment = zlib.compress(segment)
 
             for i in range(0, len(compressed_segment), chunk_size):
                 chunk = compressed_segment[i:i + chunk_size]
+                
                 if i == 0:
+                    print("Sending chunk, flag 1 chunk len: "+str(chunk))
                     yield (1, chunk)  # Start of a segment
                 elif i + chunk_size >= len(compressed_segment):
+                    print("Sending chunk, flag 2 chunk len: "+str(chunk))
                     yield (2, chunk)  # End of a segment
                 else:
+                    print("Sending chunk, flag 0 chunk len: "+str(chunk))
                     yield (0, chunk)  # Other chunks within a segment
           
 
@@ -72,7 +76,7 @@ class IncomingFile(BaseFile):
         
 
     def process_incoming_chunk(self, data, flag):
-    
+        print("Processing chunk, flag "+str(flag)+" data len: "+str(len(data)))
         if flag == 1:  # Start of a segment
             self.compressed_chunk = data
         elif flag == 2:  # End of a segment

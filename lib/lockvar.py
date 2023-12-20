@@ -16,3 +16,7 @@ class LockVar():
     def get(self):
         with self.lock:
             return copy.deepcopy(self.var)
+
+    def get_index(self, index):
+        with self.lock:
+            return copy.deepcopy(self.var[index])

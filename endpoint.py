@@ -63,14 +63,15 @@ def user_input_thread():
 
         if user_input.startswith("send_file "):
             filepath = user_input.split(" ",1)[1]
-            conn.send_file(filepath)
+            conn.send_file(filepath,2)
             print("send_file called with "+filepath)
 
 
         # If a child thread needs user input, it is asked here. N exits canceling the request
         if shared_input.get()["id"] is not None and shared_input.get()["prompt"] is not None:
-            prompt = shared_input.get()["prompt"]
+            prompt = shared_input.get_index("prompt")
             response = ""
+            print("Prompt: "+prompt)
             while True:
                 response = input(prompt)
                 if len(response) > 0 and response.lower()[0] == "n":
