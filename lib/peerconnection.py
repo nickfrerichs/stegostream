@@ -312,7 +312,7 @@ class PeerConnection:
                             
                     # Channel 2 is for receiving files and writing to disk
                     if channel == 2:
-                        print("Channel 2 packet arrived: "+str(data))
+                        #print("Channel 2 packet arrived: "+str(data))
                         # File send request is received from peer, handle request and send ack, IncomingFile returned if success
                         if self.channel_status.get()[channel][0] == Status.NONE and Flags.is_only_set(flags,Flags.SYN):
                             print("Incoming File initiated")
@@ -459,32 +459,32 @@ class PeerConnection:
     def __process_channel_send_buffer(self, channel, max_items=sys.maxsize):
         channel_q = self.send_buffer.var[channel].queue
         count = 0
-        with self.send_buffer.lock:
-            while not channel_q.empty() and count < max_items:
-                message, seq, bin_flags = channel_q.get()
-                with self.seq.lock, self.ack.lock:
-                    data = channel.to_bytes(1, byteorder='big')+bin_flags + self.ack.var[channel].to_bytes(2, byteorder='big') + seq.to_bytes(2, byteorder='big') + message
-                # videoStream will queue sending, one goes out every 2 seconds
-                self.videoStream.send(data)
-                print("Send: "+str(seq))
-                count+=1
 
-            # Send out any requested missing packets and empty the resend list
-            resend_count = 0
+        while not channel_q.empty() and count < max_items:
+            message, seq, bin_flags = channel_q.get()
+            with self.seq.lock, self.ack.lock:
+                data = channel.to_bytes(1, byteorder='big')+bin_flags + self.ack.var[channel].to_bytes(2, byteorder='big') + seq.to_bytes(2, byteorder='big') + message
+            # videoStream will queue sending, one goes out every 2 seconds
+            self.videoStream.send(data)
+            print("Send: "+str(seq))
+            count+=1
 
-            with self.resend.lock, self.peer_ack.lock:
-                if len(self.resend.var[channel]) > 0:
-                    for syn in self.resend.var[channel]:
-                        if syn < self.peer_ack.var[channel]:
-                            continue
-                        print(self.send_buffer.var[channel].buffer)
-                        buffer_data = self.send_buffer.var[channel].buffer[syn]
-                        self.videoStream.send(buffer_data)
-                        print("Resend "+str(syn))
-                        resend_count+=1
+        # Send out any requested missing packets and empty the resend list
+        resend_count = 0
 
-                    self.resend.var[channel] = list()
-                    print("Emptied resend list")
+        with self.resend.lock, self.peer_ack.lock:
+            if len(self.resend.var[channel]) > 0:
+                for syn in self.resend.var[channel]:
+                    if syn < self.peer_ack.var[channel]:
+                        continue
+                    #print(self.send_buffer.var[channel].buffer)
+                    buffer_data = self.send_buffer.var[channel].buffer[syn]
+                    self.videoStream.send(buffer_data)
+                    print("Resend "+str(syn))
+                    resend_count+=1
+
+                self.resend.var[channel] = list()
+                print("Emptied resend list")
 
     def send_text(self, text):
 
@@ -579,9 +579,16 @@ class PeerConnection:
         if bin_flags is None:
             bin_flags = Flags.get_bin(Flags.NONE)
 
-        with self.send_buffer.lock, self.seq.lock:
-            self.send_buffer.var[channel].add(binary_data, self.seq.var[channel], bin_flags)
-            self.seq.var[channel] += 1
+
+        while True:
+            with self.send_buffer.lock:
+                result = self.send_buffer.var[channel].add(binary_data, self.seq.var[channel], bin_flags)
+                if result:
+                    with self.seq.lock:
+                        self.seq.var[channel] += 1
+                    break
+            print("Buffer full, retrying")
+            time.sleep(2)
 
 
     # Control messages always on channel 1, are not buffered
@@ -669,18 +676,22 @@ class Status(Enum):
 
 class Buffer:
 
-    def __init__(self, channel, queue_size=None):
+    def __init__(self, channel, max_items=sys.maxsize):
         self.buffer = {}
-        if queue_size:
-            self.queue = queue.Queue(maxsize=queue_size)
-        else:
-            self.queue = queue.Queue()
+        self.lock = threading.Lock()
+        self.max_items = max_items
+        self.queue = queue.Queue()
         self.channel = channel
         self.no_ack = 0
     
     def add(self, bin_data, seq, bin_flags):
+        if len(self.buffer) >= self.max_items:
+            return False
         self.queue.put((bin_data, seq, bin_flags))
         self.buffer[seq] = self.channel.to_bytes(1, byteorder='big')+bin_flags + self.no_ack.to_bytes(2, byteorder='big') + seq.to_bytes(2, byteorder='big') + bin_data
+        return True
+
+
 
     def get_message(self, index):
         return self.buffer[index]
@@ -690,4 +701,5 @@ class Buffer:
     
     def purge_buffer(self, ack):
         self.buffer = {key: value for key, value in self.buffer.items() if key >= ack}
+
         

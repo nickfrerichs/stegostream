@@ -35,13 +35,13 @@ class OutgoingFile(BaseFile):
                 chunk = compressed_segment[i:i + chunk_size]
                 
                 if i == 0:
-                    print("Sending chunk, flag 1 chunk len: "+str(chunk))
+                    print("Sending chunk, flag 1 chunk len: "+str(len(chunk)))
                     yield (1, chunk)  # Start of a segment
                 elif i + chunk_size >= len(compressed_segment):
-                    print("Sending chunk, flag 2 chunk len: "+str(chunk))
+                    print("Sending chunk, flag 2 chunk len: "+str(len(chunk)))
                     yield (2, chunk)  # End of a segment
                 else:
-                    print("Sending chunk, flag 0 chunk len: "+str(chunk))
+                    print("Sending chunk, flag 0 chunk len: "+str(len(chunk)))
                     yield (0, chunk)  # Other chunks within a segment
           
 
