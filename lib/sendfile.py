@@ -8,7 +8,8 @@ class BaseFile:
     def __init__(self, file_path):
         self.id = random.randint(0, 65535)
         self.path = file_path
-        self.name, self.ext = os.path.splitext(os.path.basename(file_path))
+        self.basename, self.ext = os.path.splitext(os.path.basename(file_path))
+        self.name = self.basename+"."+self.ext
         self.size = None
         if self.exists():
             self.size = self.__get_size()
@@ -35,13 +36,13 @@ class OutgoingFile(BaseFile):
                 chunk = compressed_segment[i:i + chunk_size]
                 
                 if i == 0:
-                    print("Sending chunk, flag 1 chunk len: "+str(len(chunk)))
+                    print("Sending file chunk, flag 1 chunk len: "+str(len(chunk)))
                     yield (1, chunk)  # Start of a segment
                 elif i + chunk_size >= len(compressed_segment):
-                    print("Sending chunk, flag 2 chunk len: "+str(len(chunk)))
+                    print("Sending file chunk, flag 2 chunk len: "+str(len(chunk)))
                     yield (2, chunk)  # End of a segment
                 else:
-                    print("Sending chunk, flag 0 chunk len: "+str(len(chunk)))
+                    print("Sending file chunk, flag 0 chunk len: "+str(len(chunk)))
                     yield (0, chunk)  # Other chunks within a segment
           
 

@@ -96,13 +96,11 @@ class Codec:
                         cv2.imwrite(os.path.join(DEBUG_IMAGE_PATH, "debug_image.bmp"),image)
                         cv2.imwrite(os.path.join(DEBUG_IMAGE_PATH, "debug_box.bmp"),box)
 
-               # print(str(i)+", "+str(j)+" : "+self.decode_map[index]+" : "+index)
 
-     #   print(raw_data)
         try:
             data, crc = raw_data.split(DELIMITER,1)
         except Exception as e:
-            print("CRC Failed parsing: "+raw_data+"\n"+str(name))
+            print("CRC Failed parsing: "+str(name))
             self.__write_debug_images(image,name)
             return (False, "".encode("utf-8"), (raw_data, image))
 
@@ -111,15 +109,12 @@ class Codec:
            # return (True, base64.b32decode(data).decode('utf-8'), (raw_data, image))
             return (True, base64.b32decode(data), (raw_data, image))
         else:
-            print("CRC Failed: "+raw_data+"\n"+str(name))
+            print("CRC Failed: "+str(name))
             self.__write_debug_images(image,name)
             return (False, "".encode("utf-8"), (raw_data, image))
 
-        #     return (True, data, (crc, raw_data))
 
-        # return (False, data, (crc, raw_data))
-
-
+    # Unused, leaving it for now
     def __create_grid(self, rows, cols, box_size, gap_size):
         box_color = (0, 0, 0)  # RGB values for the black box
         background_color = (255, 255, 255)  # RGB values for the white background
@@ -156,14 +151,7 @@ class Codec:
                 y2 = ((j+1)*offset)-(gap_size +2)
                 box = image[y1:y2, x1:x2]
                 cv2.imwrite(os.path.join(path, name+"_debug_box.bmp"),box)
-#                rgb = np.mean(box, axis=(0, 1))
-                # Normalize the values so they match one of the possible values
- #               r = min(self.map_range, key=lambda x: abs(x - rgb[0]))
-  #              g = min(self.map_range, key=lambda x: abs(x - rgb[1]))
-   #             b = min(self.map_range, key=lambda x: abs(x - rgb[2]))
-    #            if (r == 255 and g == 255 and b == 255) == False:
-     #               if self.debug_mode:
-      #                  cv2.imwrite(os.path.join(DEBUG_IMAGE_PATH, name+"_debug_box.bmp"),box)
+
 
     # Create mapping
     def create_mapping(self, offset, chars):
@@ -189,25 +177,6 @@ class Codec:
             decode_map[str(encode_map[c])] = c
             i += 1
 
-            # print(rgb)
-            # if rgb > 511:
-                
-            # if rgb > 511:
-            #     r = 0
-            #     g = 0
-            #     b = rgb - 511
-            # elif rgb > 255:
-            #     r = 0
-            #     g = rgb - 255
-            #     b = 0
-            # else:
-            #     r = rgb
-            #     g = 0
-            #     b = 0
-
-            # encode_map[c] = (r,g,b)
-            # decode_map[str(r)+str(g)+str(b)] = c
-            # rgb += offset
         return (encode_map, decode_map, map_range)
 
 
@@ -236,19 +205,10 @@ class Codec:
         self.debug_mode = value
 
 
-if __name__ == '__main__':
-    codec = Codec()
-    image = cv2.imread("../temp/out1.bmp")
-    is_valid, msg_data, data = codec.decode(image)
-    print(msg_data)
-    print(is_valid)
+# if __name__ == '__main__':
+#     codec = Codec()
+#     image = cv2.imread("../temp/out1.bmp")
+#     is_valid, msg_data, data = codec.decode(image)
+#     print(msg_data)
+#     print(is_valid)
 
-
-    # image = codec.encode("This is a much longer test message.")
-    # cv2.imwrite('grid_image.png', image)
-    # cv2.imshow("Test",image)
-    # cv2.waitKey(2000)
-    # cv2.destroyAllWindows()
-    # image_path = 'grid_image.png'
-    # grid_image = cv2.imread(image_path)
-    # codec.decode(grid_image)

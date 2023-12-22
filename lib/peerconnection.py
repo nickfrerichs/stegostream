@@ -20,13 +20,12 @@ class PeerConnection:
         self.recvMessagesThread = None
         self.conn_status = LockVar(Status.NONE)
         self.connected = False
-        # 2 Channels so text and data transfers can happen simultaneously
         self.seq = LockVar({1:1, 2:1})
         self.ack = LockVar({1:1, 2:1})
         self.peer_ack = LockVar({1:0, 2:0})
         self.resend = LockVar({1:list(),2:list()})
         self.missing = LockVar({1:set(),2:set()})
-        self.send_buffer = LockVar({1:Buffer(1), 2:Buffer(2, 10)})
+        self.send_buffer = LockVar({1:Buffer(1), 2:Buffer(2, 20)})
         self.resend_queue = LockVar({1:queue.Queue(), 2:queue.Queue()})
         self.recv_buffer = LockVar({1:{}, 2:{}})
         self.channel_status = LockVar({1:[Status.NONE,None], 2:[Status.NONE,None]})
@@ -131,16 +130,8 @@ class PeerConnection:
     #
     # __recvMessagesWorker 
     # One worker for all channels
-    #   - Channel 0 is handled by this thread directly, used for establishing a connection and health
-    #   - Channel 1 is sent to a recvBuffer, text messages to be displayed on screen (work in progress)
-    #   - Channel 2 is sent to a recvBuffer, data/files to be saved (TBD)
-    #
     # __processRecvBuffer Worker
     # One worker for each channel (except 0)
-    #   - Determine the ack to be used on next packet sent to peer to confirm received messages
-    #   - Purge buffer of anything that has been received in order/ack sent
-    #
-    #
 
     def __recvMessagesWorker(self):
 
@@ -195,6 +186,8 @@ class PeerConnection:
                         self.peer_ack.var[channel] =  ack
                     if len(resend_list) > 0:
                         print ("Got MAINT packet with resends - channel: "+str(channel)+", ack "+str(ack)+" resend: "+str(resend_list))
+                    else:
+                        print ("Got MAINT packet channel: "+str(channel)+", ack "+str(ack)+" no resends")
                     if not resend_list:  # Check if resend_list is empty
                         resend_list = []  # Assign an empty list if it's empty
                     elif isinstance(resend_list, int):
@@ -206,7 +199,7 @@ class PeerConnection:
                 # If the ack specified is less than the current syn, it means the peer never received that, but may not know it was sent. Resend it
                 with self.ack.lock,  self.seq.lock, self.resend.lock:
                     last_seq = self.seq.var[channel]-1
-                ###    print ("Got MAINT packet - channel: "+str(channel)+", ack "+str(ack)+" resend: "+str(resend_list)+", last_seq: "+str(last_seq))
+
                     if ack <= last_seq and len(self.resend.var[channel]) == 0:
                         # Could resend everything from ack to seq incase they missed multiple
                         self.resend.var[channel].append(last_seq)
@@ -238,23 +231,6 @@ class PeerConnection:
 
     def __processRecvBufferWorker(self, channel):
 
-        # def calculateAck(channel):
-        #     # Thank you ChatGPT
-        #     sorted_seq_numbers = sorted(self.recv_buffer.get()[channel])
-
-        #     high_ack = sorted_seq_numbers[0]+1 if sorted_seq_numbers else 1  # Initialize with 0 if the buffer is empty
-
-        #     # ack already aquired
-        #     ack = max(high_ack, self.ack.var[channel])
-
-        #     for seq in sorted_seq_numbers[1:]:
-        #         if seq == ack + 1:
-        #             ack = seq  # Update ack if the sequence numbers are contiguous
-        #         else:
-        #             break  # Exit the loop if a non-contiguous sequence number is encountered
-        #     # The 'ack' now represents the highest contiguous sequence number
-        #     return ack
-
         # Initialize the ack to 1
         with self.ack.lock:
             self.ack.var[channel] = 1
@@ -265,8 +241,6 @@ class PeerConnection:
         while True:
             purge_buffer = False
             # Determine what the "ack" should be set to based on how many contiguous packets are in the recv_buffer
-            # with self.ack.lock:
-            #     max_ack = calculateAck(channel)
 
             with self.recv_buffer.lock, self.ack.lock:
                 buffered_seq = sorted(self.recv_buffer.var[channel])
@@ -288,10 +262,8 @@ class PeerConnection:
                         continue
                     
                     # If not out of order, update the ack and continue processing the data
-                    # with self.missing.lock:
-                    #     self.missing.var[channel].discard(seq)
                     self.ack.var[channel] += 1
-                    print(str(seq)+" is being processed. Ack increased to "+str(self.ack.var[channel]))
+                    print(str(seq)+" is being processed on channel "+str(channel)+". Ack increased to "+str(self.ack.var[channel]))
                     data, flags = self.recv_buffer.var[channel][seq]
                     purge_buffer = True
                     # Channel 1 is for text messages to be displayed to the screen
@@ -307,8 +279,6 @@ class PeerConnection:
                             print("\n*******************************************************\n")
                             msg = None
 
-                        # text = self.recv_buffer.var[channel][seq].decode('utf-8')
-                        # print(text)
                             
                     # Channel 2 is for receiving files and writing to disk
                     if channel == 2:
@@ -333,9 +303,6 @@ class PeerConnection:
                         #     incoming_file = None
                         #     continue
 
-                        # If SYN_RECV, an out_path was provided, send an ACK
-
-
                         # Somewhere, need to check if the file timer has expired and reset the whole thing
 
                         if self.channel_status.get()[channel][0] == Status.FILE_RECV and Flags.is_set(flags,Flags.SYN):
@@ -349,17 +316,17 @@ class PeerConnection:
 
             if maint_timer < time.time():
                 # check for resends and process
+                missing_list = []
                 with self.missing.lock, self.ack.lock:
                     binary_data = struct.pack('>BH', channel, self.ack.var[channel])
                     if len(self.missing.var[channel]) > 0:
                         # Make sure all missing seq #s are greater than the ack
                         missing_list = [x for x in list(self.missing.var[channel]) if x >= self.ack.var[channel]]
                         if len(missing_list) > 0:
-                            print("Sending MAINT packet for channel:"+str(channel)+", ack "+str(self.ack.var[channel])+", missing "+str(missing_list))
                             # Channel + List of missing syn #s
                             binary_data += struct.pack('>{}i'.format(len(missing_list)), *missing_list)
                             self.missing.var[channel] = set()                    
-                    print("Sending MAINT packet for channel:"+str(channel)+", ack "+str(self.ack.var[channel]))
+                    print("Sending MAINT packet for channel:"+str(channel)+", ack "+str(self.ack.var[channel])+", missing_list: "+str(missing_list))
                     self.__send_control_message(Flags.get_bin(Flags.MAINT),binary_data)
                 # reset timer
                 maint_timer = time.time()+maint_interval
@@ -367,10 +334,9 @@ class PeerConnection:
 
             # Clear buffer for this channel up to the ack number, thank ChatGPT for the one-liner
             if purge_buffer:
-                print("Purging buffer")
                 with self.recv_buffer.lock, self.ack.lock:
                     self.recv_buffer.var[channel] = {key: value for key, value in self.recv_buffer.var[channel].items() if key >= self.ack.var[channel]}
-                print("Buffer contains: "+str(self.recv_buffer.var[channel].keys()))
+
             
             time.sleep(.1)
 
@@ -419,9 +385,13 @@ class PeerConnection:
         # It is the start of a new compressed segment, flag = 1 for start of new segment
         if  Flags.is_set(flags, [Flags.SYN, Flags.START_DATA]):
             incoming_file.process_incoming_chunk(data, 1)
+            print("Started receiving file: "+str(incoming_file.name))
         # It is the end of a compressed segment, flag = 2 for end of segment 
         elif Flags.is_set(flags, [Flags.SYN, Flags.END_DATA]):
             incoming_file.process_incoming_chunk(data, 2)
+            print("\n=============================================")
+            print("Finished receiving file: "+incoming_file.name)
+            print("=============================================\n")
         elif Flags.is_set(flags, [Flags.SYN, Flags.MOD]):
             incoming_file.process_incoming_chunk(data, 0)
             
@@ -433,10 +403,7 @@ class PeerConnection:
     #
     # __processSendBufferWorker()
     # One thread handles sending for all channels, each loop: 
-    # - Send all messages in channel 1 buffer (text messages)
-    # - Send one message in channel 2 buffer (data/files)
-    #
-    #
+
     def __processSendBufferWorker(self):
         while True:
 
@@ -484,7 +451,6 @@ class PeerConnection:
                     resend_count+=1
 
                 self.resend.var[channel] = list()
-                print("Emptied resend list")
 
     def send_text(self, text):
 
@@ -518,21 +484,14 @@ class PeerConnection:
     def __send_file(self, channel, file):
         # Send a SYN flag packet to peer with filename and size on Channel 2
         if self.channel_status.get()[channel][0] == Status.NONE:
-            print("In channel status == None")
             bin_flags = Flags.get_bin(Flags.SYN)
             filename_bytes = file.name.encode("utf-8")
             # Pack the values into a binary object using struct
             binary_data = struct.pack(f'!HQ{len(filename_bytes)}s', file.id, file.size, filename_bytes)
 
             self.__queue_message(binary_data, channel, bin_flags)
-            print("Queued message to request send")
-            for attempt in range(30):
-                print(self.channel_status.get()[channel][0])
-                print(self.channel_status.get()[channel][1])
-                print(file.id)
-                print(str(type(self.channel_status.get()[channel][1])))
-                print(str(type(file.id)))
 
+            for attempt in range(30):
                 if self.channel_status.get()[channel][0] == Status.ACK_RECV and self.channel_status.get()[channel][1] == file.id:
                     with self.channel_status.lock:
                         self.channel_status.var[channel][0] = Status.FILE_SEND
@@ -545,9 +504,11 @@ class PeerConnection:
                     bin_flags = Flags.get_bin(Flags.NONE)
                     if flag == 1:
                         bin_flags = Flags.get_bin([Flags.SYN, Flags.START_DATA])
+                        print("Starting send of file: "+str(file.name))
                         # New segment
                     elif flag == 2:
                         bin_flags = Flags.get_bin([Flags.SYN, Flags.END_DATA])
+                        print("Finished sending file: "+str(file.name))
                         # End of segment
                     else:
                         bin_flags = Flags.get_bin((Flags.SYN, Flags.MOD))
@@ -556,19 +517,6 @@ class PeerConnection:
                     self.__queue_message(chunk, channel, bin_flags)
 
                     time.sleep(2)
-
-
-        #       # It is the start of a new compressed segment, flag = 1 for start of new segment
-        # if  Flags.is_set(flags, [Flags.SYN, Flags.START_DATA]):
-        #     incoming_file.process_incoming_chunk(data, 1)
-        # # It is the end of a compressed segment, flag = 2 for end of segment 
-        # elif Flags.is_set(flags, [Flags.SYN, Flags.END_DATA]):
-        #     incoming_file.process_incoming_chunk(data, 2)
-        # else:
-        #     incoming_file.process_incoming_chunk(data, 0)
-            
-        # pass
-            
 
     # When messages are queued:
     # - Add to buffer
@@ -587,7 +535,7 @@ class PeerConnection:
                     with self.seq.lock:
                         self.seq.var[channel] += 1
                     break
-            print("Buffer full, retrying")
+            print("Buffer full, waiting...")
             time.sleep(2)
 
 
