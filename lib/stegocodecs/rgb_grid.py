@@ -100,7 +100,7 @@ class Codec:
         try:
             data, crc = raw_data.split(DELIMITER,1)
         except Exception as e:
-            print("CRC Failed parsing: "+str(name))
+            # log this instead? print("CRC Failed parsing: "+str(name))
             self.__write_debug_images(image,name)
             return (False, "".encode("utf-8"), (raw_data, image))
 
@@ -109,7 +109,7 @@ class Codec:
            # return (True, base64.b32decode(data).decode('utf-8'), (raw_data, image))
             return (True, base64.b32decode(data), (raw_data, image))
         else:
-            print("CRC Failed: "+str(name))
+            # log this instead? print("CRC Failed: "+str(name))
             self.__write_debug_images(image,name)
             return (False, "".encode("utf-8"), (raw_data, image))
 

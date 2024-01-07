@@ -16,7 +16,8 @@ DEBUG_FILES_PATH = "./debug"
 
 class VideoStream:
 
-    def __init__(self, video_url, codec):
+    def __init__(self, video_url, codec, msg):
+        self.msg = msg
         self.local_seq = 0
         self.remote_seq = 0
         self.codec = codec()
@@ -53,7 +54,7 @@ class VideoStream:
         cmd = config.YT_DLP+ " -f best -g "+self.video_url
 
         if os.path.isfile(config.YT_DLP) == False:
-            print("yt_dlp not found: "+config.YT_DLP)
+            self.msg.print("yt_dlp not found: "+config.YT_DLP)
             return
 
         while True:
@@ -61,7 +62,7 @@ class VideoStream:
                 source_url = subprocess.check_output(cmd,shell=True,encoding='UTF-8',stderr=subprocess.PIPE).strip()
                 break
             except subprocess.CalledProcessError:
-                print("Failed to connect to live stream. Is it live?")
+                self.msg.print("Failed to connect to live stream. Is it live?")
                 time.sleep(1)
                 continue
         
@@ -182,9 +183,28 @@ class VideoStream:
 
 
     def __setStatus(self):
+
+        nonce_int = None
+        if self.stream_nonce:
+            nonce_int = int.from_bytes(self.stream_nonce, byteorder='big')
+
         if (self.recvThread and self.recvThread.is_alive() and self.ffmpeg_subprocess 
                 and self.sendThread and self.sendThread.is_alive() and self.last_msg != None and self.stream_nonce_match):
             self.status = "STREAM UP"
+        elif (self.recvThread and self.recvThread.is_alive() and self.ffmpeg_subprocess 
+                and self.sendThread and self.sendThread.is_alive()):
+            self.status = "Send Stream initialized with nonce "+str(nonce_int)+", recv stream initalizing"
+        elif self.sendThread and self.sendThread.is_alive():
+            self.status = "Send Stream initialized with nonce "+str(nonce_int)+", no recv stream"
+        else:
+            self.status = "IDLE"
+        self.msg.set_status("stream",self.status)
+        if self.status == "STREAM UP":
+            rate = (self.stats.var.recv_valid / self.stats.var.recv_total) * 100
+            rate_string = "{:.2f}%".format(rate)
+            stats = "Send: {}, Recv: {} (CRC: {}/{:.0f} - {})".format(
+            self.stats.var.send_total, self.stats.var.recv_new, self.stats.var.recv_valid, self.stats.var.recv_total, rate_string)
+            self.msg.set_status("stream","STREAM UP ("+str(nonce_int)+") - "+stats)
 
     def getStatus(self):
         self.__setStatus()
@@ -202,7 +222,7 @@ class VideoStream:
             # Save the image to a temporary file
             temp_image_path = os.path.join(tempfile.gettempdir(), 'temp_image.jpg')
             cv2.imwrite(temp_image_path, image)
-            print("Displaying image from last valid packet")
+            self.msg.print("Displaying image from last valid packet")
             subprocess.run(['xdg-open', temp_image_path])
 
     def get_nonce(self, val=None):
