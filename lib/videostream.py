@@ -36,6 +36,9 @@ class VideoStream:
         self.stats = LockVar(VideoStreamStats())
         self.stream_nonce = None
         self.stream_nonce_match = False
+        self.send_fps = 1
+        self.recv_fps = 2
+        self.width, self.height = 1280, 720
 
 
     # Perform everything needed to connect to an inbound video stream
@@ -67,7 +70,7 @@ class VideoStream:
                 continue
         
 
-        cmd = FFMPEG + " -y -i '"+source_url+"' -vf fps=1/2 ./"+BMP_FILES_PATH+"/out%d.bmp"
+        cmd = FFMPEG + " -y -i '"+source_url+"' -vf fps="+str(self.recv_fps)+" ./"+BMP_FILES_PATH+"/out%d.bmp"
         self.ffmpeg_subprocess = subprocess.Popen(cmd, stderr=subprocess.DEVNULL, stdin=subprocess.PIPE, shell=True)
         
         total = 0
@@ -88,6 +91,7 @@ class VideoStream:
 
                 # Try to decode the image, msg_data will be binary data
                 is_valid, msg_data, data = self.codec.decode(image,f)
+
                 with self.stats.lock:
                     self.stats.var.recv_total+=1
                     if is_valid:
@@ -103,7 +107,7 @@ class VideoStream:
                 except IndexError:
                     self.__clean_up_recv_image(file_path, start_time)
                     continue
-
+               
                 if self.stream_nonce != stream_nonce:
                     with self.stats.lock:
                         self.stats.var.recv_nonce_fail+=1
@@ -111,24 +115,24 @@ class VideoStream:
                     continue
                 elif self.stream_nonce_match == False:
                     self.stream_nonce_match = True
-
+               
                 if self.last_msg == msg_data:
                     self.__clean_up_recv_image(file_path, start_time)
                     continue
-                
+               
                 self.last_msg = msg_data
                 # Remove the stream nonce and the nonce that helps resends appear new
                 msg_data = msg_data[2:]
                 
                 with self.stats.lock:
                     self.stats.var.recv_new+=1
-
+                
                 self.recv_q.put(msg_data)
                 self.__clean_up_recv_image(file_path, start_time)
                 self.write_debug_image(image, f)
                 self.last_new_image.set(image)
                 self.last_new_image_time.set(time.time())
-                    
+                
                 time.sleep(.05)
                 self.__setStatus()
     def __clean_up_recv_image(self, file_path, start_time, out_file_path=None):
@@ -146,36 +150,73 @@ class VideoStream:
 
 
     # Perform everything needed to establish an outbound video stream
-    def initSend(self, nonce_int):
+    def initSend(self, nonce_int, rtmp_url):
         self.stream_nonce = self.get_nonce(nonce_int)
+        self.send_rtmp_url = rtmp_url
         self.sendThread = threading.Thread(target=self.__sendThread, name="Thread-1")
         self.sendThread.start()
 
 
     def __sendThread(self):
+        raw_fps = 10
+# FFmpeg command for RTMP streaming with filler audio
+        ffmpeg_cmd_stream = [
+            'ffmpeg',
+            '-r', str(raw_fps),
+            '-s', f'{self.width}x{self.height}',
+            '-f', 'rawvideo',
+            '-pix_fmt', 'bgr24',
+            '-i', 'pipe:0',
+            '-f', 'lavfi',  # Use lavfi (audio filter) for audio input
+            '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',  # Generate silent audio
+            '-c:v', 'libx264',
+            '-pix_fmt', 'yuv420p',
+            '-c:a', 'aac',
+            '-map', '0:v:0',
+            '-map', '1:a:0',
+            '-f', 'flv',
+            '-g' , str(raw_fps*4),
+            self.send_rtmp_url
+        ]
+
+        ffmpeg_process_stream = subprocess.Popen(ffmpeg_cmd_stream, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+
         last_image = None
         image = self.codec.encode(self.stream_nonce)
+        next_update = time.time()
         while True:
-            start = time.time()
-            # Receive binary data from the queue, convert to encoded image
-            try:
-                data = self.send_q.get_nowait()
-                
-                image = self.codec.encode(self.stream_nonce+self.get_nonce()+data)
-                with self.stats.lock:
-                    self.stats.var.send_total+=1
-            except queue.Empty:
-                pass
+            if time.time() >= next_update:
+                # This is the rate of the image being updated with data
+                next_update = time.time() + (1/self.send_fps)
+                start = time.time()
+                # Receive binary data from the queue, convert to encoded image
+                try:
+                    data = self.send_q.get_nowait()
+                    image = self.codec.encode(self.stream_nonce+self.get_nonce()+data)
 
-            if image is None:
-                time.sleep(.25)
-                continue
-#            if image is not last_image:
-            cv2.imshow("Sending", image)
-            last_image = image
-            with self.stats.lock:
-                self.stats.var.send_time+=time.time()-start
-            cv2.waitKey(2000)
+                    with self.stats.lock:
+                        self.stats.var.send_total+=1
+                except queue.Empty:
+                    pass
+
+                if image is None:
+                    time.sleep(.25)
+                    continue
+    #            if image is not last_image:
+                # ffmpeg_process_stream.stdin.write(image.tobytes())
+                # ffmpeg_process_stream.stdin.flush()
+                #cv2.imshow("Sending", image)
+                last_image = image
+                with self.stats.lock:
+                    self.stats.var.send_time+=time.time()-start
+                #cv2.waitKey(self.send_fps*1000)
+                
+
+            ffmpeg_process_stream.stdin.write(image.tobytes())
+            ffmpeg_process_stream.stdin.flush()
+            # This is the stream rate of the underlying video stream
+            time.sleep(1/(raw_fps+(raw_fps*.1)))
+
         cv2.destroyAllWindows()    
 
     def send(self, data):

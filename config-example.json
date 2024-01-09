@@ -1,4 +1,5 @@
 {
     "video_url" : "",
-    "YT_DLP" : ""
+    "YT_DLP" : "",
+    "RTMP_URL" : "rtmp://"
 }

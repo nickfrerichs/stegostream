@@ -7,16 +7,18 @@ import cv2
 DELIMITER = "-"
 VALID_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567="+DELIMITER
 DEBUG_IMAGE_PATH = "./temp/debug_images"
-# Set parameters
-rows = 12
-cols = 20
-box_size = 45
+
+# Set parameters for the image and box sizes
+width, height = 1280, 720
+num_boxes_x = 58
+num_boxes_y = 40
 gap_size = 5
+box_size_x = (width - (num_boxes_x - 1) * gap_size) // num_boxes_x
+box_size_y = (height - (num_boxes_y - 1) * gap_size) // num_boxes_y
+
+#box_size = min(box_size_x, box_size_y)
 
 background_color = (255, 255, 255)  # RGB values for the white background
-
-total_rows = rows * (box_size + gap_size) + gap_size
-total_cols = cols * (box_size + gap_size) + gap_size
 
 # Mapping from RGB to Base32
 
@@ -30,71 +32,169 @@ mapping = {
 class Codec:
 
     def __init__(self):
-        self.encode_map, self.decode_map, self.map_range = self.create_mapping(21, VALID_CHARS)
+        self.encode_map, self.decode_map, self.map_range = self.create_mapping(19, VALID_CHARS)
         self.debug_mode = False
 
 
     def encode(self, raw_data, local_seq=None, remote_seq=None):
-
-        # base32_data = base64.b32encode((raw_data).encode("ascii")).decode("ascii")
         base32_data = base64.b32encode(raw_data).decode('utf-8')
+        crc = self.__getCRC(base32_data)
 
-        crc = self.__getCRC(base32_data)  
-
-        line = (base32_data+DELIMITER+crc)
-        grid = np.ones((total_rows, total_cols, 3), dtype=np.uint8)
-        grid[0:total_rows, 0:total_cols, :] = background_color
+        line = (base32_data + DELIMITER + crc)
+        grid = np.ones((height, width, 3), dtype=np.uint8)
+        grid[:num_boxes_y * (box_size_y + gap_size), :num_boxes_x * (box_size_x + gap_size), :] = background_color
         i = 0
         j = 0
 
         for c in line:
-            grid[i:i + box_size, j:j + box_size, :] = self.encode_map[c]
-    
-            if i >= total_rows - box_size*2:
-                i = 0
-                j += box_size + gap_size
-            else:
-                i += box_size + gap_size
+
+            # This fills up the current box
+            grid[j:j + box_size_y, i:i + box_size_x, :] = self.encode_map[c]
+
+            j += box_size_y + gap_size
+            if j >= (num_boxes_y) * (box_size_y + gap_size):
+                j = 0
+                i += box_size_x + gap_size
+                if i >= (num_boxes_x) * (box_size_x + gap_size):
+                    i = 0
 
         return grid
 
 
     def decode(self, image, name=None):
-        # Row 76 is the top
-        image = image[78:total_rows+78,2:total_cols+2]
-        # rows, cols, _ = image.shape
 
-        # averages = []
+        x_offset = box_size_x+gap_size
+        y_offset = box_size_y+gap_size
 
-        raw_data = ""
+        def get_raw_data_old():
 
-        offset = box_size+gap_size
+            raw_data = ""
+            count=0
+
+            for i in range(0, num_boxes_x):
+                for j in range(0, num_boxes_y):
+                    count+=1
+                    box_name = str(i)+"_"+str(j)
+                    x1 = (i*x_offset)+2
+                    x2 = ((i+1)*x_offset)-(gap_size+2)
+                    y1 = (j*y_offset)+2
+                    y2 = ((j+1)*y_offset)-(gap_size+2)
+                    box = image[y1:y2, x1:x2]
+
+                    rgb = np.mean(box, axis=(0, 1))
+                    # Normalize the values so they match one of the possible values
+                    r = min(self.map_range, key=lambda x: abs(x - rgb[0]))
+                    g = min(self.map_range, key=lambda x: abs(x - rgb[1]))
+                    b = min(self.map_range, key=lambda x: abs(x - rgb[2]))
+
+
+                    # Exit if we encounter a white box, if this happens it's ether the end or something went wrong
+                    if (r == 255 and g == 255 and b == 255):
+                        return raw_data
+
+                    # This is valid data, it is not white
+                    if (r == 255 and g == 255 and b == 255) == False:
+                        if self.debug_mode:
+                            cv2.imwrite(os.path.join(DEBUG_IMAGE_PATH, box_name+"_debug_box.bmp"),box)
+                        index = ("(%d, %d, %d)") % (r, g, b)
+                        try:
+                            raw_data+=(self.decode_map[index])
+                        except KeyError:
+                            cv2.imwrite(os.path.join(DEBUG_IMAGE_PATH, "debug_image.bmp"),image)
+                            cv2.imwrite(os.path.join(DEBUG_IMAGE_PATH, "debug_box.bmp"),box)
+
+            return raw_data
+        
+        def get_raw_data():
+            # Set the dimensions of each box
+            #box_size_x = 10  # Replace with your actual box size
+            #box_size_y = 10  # Replace with your actual box size
+            #gap_size = 2  # Replace with your actual gap size
+
+            #num_boxes_x = (image.shape[1] - gap_size) // (box_size_x + gap_size)
+            #num_boxes_y = (image.shape[0] - gap_size) // (box_size_y + gap_size)
+
+            x_offset = box_size_x + gap_size
+            y_offset = box_size_y + gap_size
+
+            # Create an empty NumPy array to store the boxes
+            boxes = np.empty((num_boxes_x * num_boxes_y, box_size_y, box_size_x, 3), dtype=np.uint8)
+
+            # Populate the array with individual boxes
+            count = 0
+            for i in range(num_boxes_x):
+                for j in range(num_boxes_y):
+                    x1 = i * x_offset + 2
+                    x2 = (i + 1) * x_offset - (gap_size + 2)
+                    y1 = j * y_offset + 2
+                    y2 = (j + 1) * y_offset - (gap_size + 2)
+
+                    box = image[y1:y2, x1:x2]
+
+                    # Ensure the box has the correct dimensions (crop if necessary)
+                    box = cv2.resize(box, (box_size_x, box_size_y))
+
+                    # Assign the box to the boxes array
+                    boxes[count] = box
+
+                    count += 1
+            # Assume 'boxes' is a NumPy array of shape (num_boxes, height, width, 3)
+            # where the last dimension represents RGB values
+
+            # Calculate the mean RGB values for each box
+            mean_rgb_values = np.mean(boxes, axis=(1, 2))
+
+            # Find the closest values in self.map_range for each channel
+            r_indices = np.argmin(np.abs(mean_rgb_values[:, 0, None] - np.array(self.map_range)[None, :]), axis=1)
+            g_indices = np.argmin(np.abs(mean_rgb_values[:, 1, None] - np.array(self.map_range)[None, :]), axis=1)
+            b_indices = np.argmin(np.abs(mean_rgb_values[:, 2, None] - np.array(self.map_range)[None, :]), axis=1)
+
+            # Map the indices to the actual values
+            r_values = np.array(self.map_range)[r_indices]
+            g_values = np.array(self.map_range)[g_indices]
+            b_values = np.array(self.map_range)[b_indices]
+
+            # Reshape the values to be 2D arrays
+            r_values_2d = r_values.reshape((num_boxes_x, num_boxes_y))
+            g_values_2d = g_values.reshape((num_boxes_x, num_boxes_y))
+            b_values_2d = b_values.reshape((num_boxes_x, num_boxes_y))
+
+            raw_data = ""
+
+            # Loop through each column
+            for i in range(num_boxes_x):
+                # Loop through each row in the column
+                for j in range(num_boxes_y):
+                    box_name = str(i)+"_"+str(j)
+                    # Access the mapped values for the current box
+                    r_value = r_values_2d[i, j]
+                    g_value = g_values_2d[i, j]
+                    b_value = b_values_2d[i, j]
+
+                    # Exit if we encounter a white box, if this happens it's ether the end or something went wrong
+                    if (r_value == 255 and g_value == 255 and b_value == 255):
+                        return raw_data
+
+                    # This is valid data, it is not white
+                    if (r_value == 255 and g_value == 255 and b_value == 255) == False:
+                        if self.debug_mode:
+                            cv2.imwrite(os.path.join(DEBUG_IMAGE_PATH, box_name+"_debug_box.bmp"),box)
+                        index = ("(%d, %d, %d)") % (r_value, g_value, b_value)
+                        try:
+                            raw_data+=(self.decode_map[index])
+                        except KeyError:
+                            cv2.imwrite(os.path.join(DEBUG_IMAGE_PATH, "debug_image.bmp"),image)
+                            cv2.imwrite(os.path.join(DEBUG_IMAGE_PATH, "debug_box.bmp"),box)
+
+            return raw_data
+
+            
+
+        raw_data = get_raw_data()
+
+
         if self.debug_mode:
             cv2.imwrite(os.path.join(DEBUG_IMAGE_PATH, "debug_image.bmp"),image)
-        for i in range(0, cols):
-            for j in range(0, rows):
-                box_name = str(i)+"_"+str(j)
-                x1 = (i*offset)+2
-                x2 = ((i+1)*offset)-(gap_size+2)
-                y1 = (j*offset)+2
-                y2 = ((j+1)*offset)-(gap_size+2)
-                box = image[y1:y2, x1:x2]
-
-
-                rgb = np.mean(box, axis=(0, 1))
-                # Normalize the values so they match one of the possible values
-                r = min(self.map_range, key=lambda x: abs(x - rgb[0]))
-                g = min(self.map_range, key=lambda x: abs(x - rgb[1]))
-                b = min(self.map_range, key=lambda x: abs(x - rgb[2]))
-                if (r == 255 and g == 255 and b == 255) == False:
-                    if self.debug_mode:
-                        cv2.imwrite(os.path.join(DEBUG_IMAGE_PATH, box_name+"_debug_box.bmp"),box)
-                    index = ("(%d, %d, %d)") % (r, g, b)
-                    try:
-                        raw_data+=(self.decode_map[index])
-                    except KeyError:
-                        cv2.imwrite(os.path.join(DEBUG_IMAGE_PATH, "debug_image.bmp"),image)
-                        cv2.imwrite(os.path.join(DEBUG_IMAGE_PATH, "debug_box.bmp"),box)
 
 
         try:
@@ -113,44 +213,27 @@ class Codec:
             self.__write_debug_images(image,name)
             return (False, "".encode("utf-8"), (raw_data, image))
 
-
-    # Unused, leaving it for now
-    def __create_grid(self, rows, cols, box_size, gap_size):
-        box_color = (0, 0, 0)  # RGB values for the black box
-        background_color = (255, 255, 255)  # RGB values for the white background
-
-        grid = np.ones((total_rows, total_cols, 3), dtype=np.uint8) * background_color  # Initialize with specified background color
-
     
-
-
-        for i in range(0, total_rows, box_size + gap_size):
-            r_value = 0
-            for j in range(0, total_cols, box_size + gap_size):
-                box_color = (r_value, 0, 0)
-                grid[i:i + box_size, j:j + box_size, :] = box_color  # Set specified box color
-                r_value = (r_value + 10) % 256
-
-        return grid
-        
-
+    # This is untested after switching to ffmpeg for streaming directly
     def __write_debug_images(self, image, name=None):
-        offset = box_size+gap_size
+        x_offset = box_size_x+gap_size
+        y_offset = box_size_y+gap_size
         path = DEBUG_IMAGE_PATH
         if name:
             path = os.path.join(DEBUG_IMAGE_PATH,name.split(".")[0])
         if os.path.exists(path) == False:
             os.makedirs(path)
         cv2.imwrite(os.path.join(path, "debug_image.bmp"),image)
-        for i in range(0, cols):
-            for j in range(0, rows):
+        for i in range(0, width):
+            for j in range(0, height):
                 name = str(i)+"_"+str(j)
-                x1 = (i*offset)+2
-                x2 = ((i+1)*offset)-(gap_size +2)
-                y1 = (j*offset)+2
-                y2 = ((j+1)*offset)-(gap_size +2)
+                x1 = (i*x_offset)+2
+                x2 = ((i+1)*x_offset)-(gap_size +2)
+                y1 = (j*y_offset)+2
+                y2 = ((j+1)*y_offset)-(gap_size +2)
                 box = image[y1:y2, x1:x2]
-                cv2.imwrite(os.path.join(path, name+"_debug_box.bmp"),box)
+                if box.size > 0:
+                    cv2.imwrite(os.path.join(path, name+"_debug_box.bmp"),box)
 
 
     # Create mapping
@@ -160,12 +243,12 @@ class Codec:
         map_range = [255,0]
         rgb_values = []
 
-        for r in range(offset,255,offset):
+        for r in range(offset,255-offset,offset):
             rgb_values.append((r,0,0))
             map_range.append(r)
-        for g in range(offset,255,offset):
+        for g in range(offset,255-offset,offset):
             rgb_values.append((0,g,0))
-        for b in range(offset,255,offset):
+        for b in range(offset,255-offset,offset):
             rgb_values.append((0,0,b))
         
         if len(rgb_values) < len(chars):
@@ -176,7 +259,6 @@ class Codec:
             encode_map[c] = rgb_values[i]
             decode_map[str(encode_map[c])] = c
             i += 1
-
         return (encode_map, decode_map, map_range)
 
 
@@ -199,16 +281,19 @@ class Codec:
 
         img = cv2.putText(img, str(data), org, font, fontScale, color, thickness)
 
-        #cv2.imwrite(os.path.join(DEBUG_IMAGE_PATH,str(filename)+".bmp"),img)
-
     def enable_debug(self, value):
         self.debug_mode = value
 
-
+# ## Debugging
 # if __name__ == '__main__':
 #     codec = Codec()
-#     image = cv2.imread("../temp/out1.bmp")
-#     is_valid, msg_data, data = codec.decode(image)
-#     print(msg_data)
-#     print(is_valid)
+#     print (codec.map_range)
+#     image_path = "./testimage.png"
+#     text = "This is a test"
+#     image = codec.encode(text.encode('utf-8'))
+#     cv2.imwrite(image_path, image)
+#     image = cv2.imread(image_path)
+#     result, data, raw = codec.decode(image)
+#     print(data)
+
 

@@ -9,7 +9,7 @@ class BaseFile:
         self.id = random.randint(0, 65535)
         self.path = file_path
         self.basename, self.ext = os.path.splitext(os.path.basename(file_path))
-        self.name = self.basename+"."+self.ext
+        self.name = self.basename+self.ext
         self.size = None
         if self.exists():
             self.size = self.__get_size()
@@ -28,11 +28,11 @@ class OutgoingFile(BaseFile):
         super().__init__(file_path)
 
 
-    def get_file_chunks(self, chunk_size=100):
+    def get_file_chunks(self, chunk_size=1200):
         for segment in self.__get_file_segments():
             compressed_segment = zlib.compress(segment)
 
-            for i in range(0, len(compressed_segment), chunk_size):
+            for i in range(0, len(compressed_segment)):
                 chunk = compressed_segment[i:i + chunk_size]
                 
                 if i == 0:
@@ -45,7 +45,7 @@ class OutgoingFile(BaseFile):
 
 
     def __get_file_segments(self):
-        segment_size = 100 * 1024  # 100KB in bytes
+        segment_size = 3 * 1024 * 1024  # 100KB in bytes
 
         with open(self.path, 'rb') as file:
             while True:

@@ -9,6 +9,11 @@ import argparse
 from lib.config import Config
 import lib.lockvar
 from datetime import datetime
+import logging
+
+# Configure logging
+log_file_path = './error.log'
+logging.basicConfig(filename=log_file_path, level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
 
 config = Config()
 msg = None
@@ -94,7 +99,7 @@ def process_user_input():
         if nonce.isdigit() == False:
             msg.print("You must specify a numeric value 0-255")
             return
-        conn.initsend(int(nonce))
+        conn.initsend(int(nonce),config.RTMP_URL)
         time.sleep(2)
         msg.print("\n\n")
 
@@ -129,14 +134,27 @@ def display_status(stdscr):
     #     msg.status3 = "File Send Idle"
     stdscr.addstr(1, 0, prompt.format(msg.user_input))
     stdscr.hline(2, 0, '-', curses.COLS)
+
+    if msg.input_prompt:
+        stdscr.addstr(3, 0, prompt.format(msg.input_prompt))
+    else:
+        stdscr.addstr(3, 0,"")
+
+
+    stdscr.hline(4, 0, '-', curses.COLS)
+
     # Display responses to the user
     #stdscr.addstr(3, 0, msg.response1)
     #stdscr.addstr(4, 0, msg.response2)
     # Display last 5 messages
-    messages_y = 3
+    messages_y = 5
     num_channels = msg.channel_count+1
+
+
     for i, message in enumerate(reversed(msg.last_messages)):
-        stdscr.addstr(messages_y + i, 0, message)
+        stdscr.addstr(messages_y + i, 0, str(message))
+
+
     # Draw a line above the statuses
     stdscr.hline(curses.LINES - (4+num_channels), 0, '-', curses.COLS)
 
@@ -148,7 +166,7 @@ def display_status(stdscr):
         stdscr.addstr(status2_y, 0, "Peer Conn:    ".ljust(width)+msg.status["conn"])
         # Iterate through channel statuses
         for channel in range(num_channels):
-            line_y = curses.LINES - 1 - channel
+            line_y = curses.LINES - 1 - abs(channel - num_channels +1)
             stdscr.addstr(line_y, 0, f"Channel {channel}:".ljust(width) + f"{msg.status[channel]}")
     except curses.error:
         pass
@@ -176,9 +194,10 @@ def purge_temp_files():
 class AppMessages:
     def __init__(self):
         self.channel_count = 2
+        self.text_message_wrap = 75
         self.input_lock = threading.Lock()
         self.status_lock = threading.Lock()
-        self.msg_lines = 15
+        self.msg_lines = 25
         self.input_prompt = None
         self.user_input = ""
         self.user_response = None
@@ -188,24 +207,41 @@ class AppMessages:
         for i in range(self.channel_count+1):
             self.status[i] = "" 
         self.last_messages = [""] * self.msg_lines
+        
 
 
     def print(self, text):
+
         timestamp = datetime.now().strftime("%H:%M:%S")
-        message_with_timestamp = "{}: {}".format(timestamp, text)
+        text = str(text)
+
         if args.basic_output:
+            message_with_timestamp = "{}: {}".format(timestamp, text)
             print(message_with_timestamp)
         else:
-            # Insert new messages at the beginning of the list
-            self.last_messages.insert(0, message_with_timestamp)
+            # Split the message into lines if it's longer than 50 characters
+            if len(text) > self.text_message_wrap:
+                lines = [text[i:i+self.text_message_wrap] for i in range(0, len(text), self.text_message_wrap)]
 
-            # Trim the list to keep only the last 10 messages
+                # Prepend timestamp to each line
+                lines = ["{}: {}".format(timestamp, line) for line in reversed(lines)]
+            else:
+                lines = ["{}: {}".format(timestamp, text)]
+
+            # Insert new messages at the beginning of the list
+            self.last_messages = lines + self.last_messages
+
+            # Trim the list to keep only the last `msg_lines` messages
             self.last_messages = self.last_messages[:self.msg_lines]
 
     def request_input(self, prompt):
         with self.input_lock:
             if self.input_prompt == None:
                 self.input_prompt = prompt
+                if args.basic_output:
+                    print("==================================================================")
+                    print(self.input_prompt)
+                    print("==================================================================")
                 return True
         return False
     
@@ -237,17 +273,19 @@ class AppMessages:
             self.status[index] = text
 
     def update_statuses(self):
+        self.status[0] = str(conn.conn_status.var)
         for i in range(1,self.channel_count+1):
-            text = str(conn.channel_status.var[i])
-            text += " - Seq: "+str(conn.seq.var[i])
-            text += " Ack: "+str(conn.ack.var[i])
-            text += " PAck: "+str(conn.peer_ack.var[i])
-            text += " Resend: "+str(len(conn.resend.var[i]))
-            text += " Missing: "+str(len(conn.missing.var[i]))
-            text += " SBuff: "+str(len(conn.send_buffer.var[i].buffer))
-            text += " Resend: "+str(conn.resend_queue.var[i].qsize())
-            text += " RBuff: "+str(len(conn.recv_buffer.var[i]))
-             
+            text = str(conn.channel_status.var[i][0])
+            text += " | S:"+str(len(conn.send_buffer.var[i].buffer))
+           # text += " Resend: "+str(conn.resend_queue.var[i].qsize())
+            text += " R:"+str(len(conn.recv_buffer.var[i]))
+            text += " |" 
+            text += " S:"+str(conn.seq.var[i])
+            text += " A:"+str(conn.ack.var[i])
+            text += " P:"+str(conn.peer_ack.var[i])
+           # text += " Resend: "+str(len(conn.resend.var[i]))
+           # text += " Missing: "+str(len(conn.missing.var[i]))
+
             self.status[i]= text
 
 

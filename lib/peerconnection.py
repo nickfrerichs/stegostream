@@ -26,7 +26,7 @@ class PeerConnection:
         self.peer_ack = LockVar({1:0, 2:0})
         self.resend = LockVar({1:list(),2:list()})
         self.missing = LockVar({1:set(),2:set()})
-        self.send_buffer = LockVar({1:Buffer(1), 2:Buffer(2, 20)})
+        self.send_buffer = LockVar({1:Buffer(1), 2:Buffer(2, 50)})
         self.resend_queue = LockVar({1:queue.Queue(), 2:queue.Queue()})
         self.recv_buffer = LockVar({1:{}, 2:{}})
         self.channel_status = LockVar({1:[Status.NONE,None], 2:[Status.NONE,None]})
@@ -40,14 +40,15 @@ class PeerConnection:
             if status == "STREAM UP":
                 self.recvMessagesThread = threading.Thread(target=self.__recvMessagesWorker, name="recvMessages")
                 self.recvMessagesThread.start()
+                self.msg.set_status(0,str(self.conn_status.var))
                 return
             time.sleep(5)
 
-    def initsend(self, nonce):
+    def initsend(self, nonce, rtmp_url):
         if self.sendStreamUp():
             self.msg.print("Send stream is already running.")
             return
-        self.videoStream.initSend(nonce)
+        self.videoStream.initSend(nonce, rtmp_url)
         time.sleep(1)
         self.initrecv()
 
@@ -237,7 +238,7 @@ class PeerConnection:
         with self.ack.lock:
             self.ack.var[channel] = 1
 
-        maint_interval = 20
+        maint_interval = 30
         maint_timer = time.time()+maint_interval
 
         while True:
@@ -276,9 +277,10 @@ class PeerConnection:
                         msg.receive_chunk(data)
 
                         if Flags.is_set(flags,Flags.END_DATA):
-                            self.msg.print("\n*******************************************************\n")
+                            self.msg.print("*******************************************************")
                             self.msg.print(msg.decompress_message())
-                            self.msg.print("\n*******************************************************\n")
+                            self.msg.print("*******************************************************")
+      
                             msg = None
 
                             
@@ -288,6 +290,7 @@ class PeerConnection:
                         # File send request is received from peer, handle request and send ack, IncomingFile returned if success
                         if self.channel_status.get()[channel][0] == Status.NONE and Flags.is_only_set(flags,Flags.SYN):
                             self.msg.print("Incoming File initiated")
+                            self.set_channel_status(channel,Status.SYN_RECV)
                             incoming_file = self.__handle_file_request_from_peer(data, channel)
                             if incoming_file == None:
                                 continue
@@ -312,7 +315,7 @@ class PeerConnection:
                 
 
                     
-            time.sleep(.25)
+            time.sleep(.15)
 
 
             if maint_timer < time.time():
@@ -429,7 +432,7 @@ class PeerConnection:
                 with self.peer_ack.lock, self.send_buffer.lock:
                     self.send_buffer.var[channel].purge_buffer(self.peer_ack.var[channel])
                     
-            time.sleep(.1)
+            time.sleep(.25)
 
 
     def __process_channel_send_buffer(self, channel, max_items=sys.maxsize):
