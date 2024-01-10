@@ -32,9 +32,8 @@ class OutgoingFile(BaseFile):
         for segment in self.__get_file_segments():
             compressed_segment = zlib.compress(segment)
 
-            for i in range(0, len(compressed_segment)):
+            for i in range(0, len(compressed_segment), chunk_size):
                 chunk = compressed_segment[i:i + chunk_size]
-                
                 if i == 0:
                     yield (1, chunk)  # Start of a segment
                 elif i + chunk_size >= len(compressed_segment):
@@ -44,7 +43,7 @@ class OutgoingFile(BaseFile):
           
 
     def __get_file_segments(self):
-        segment_size = int((1000 * 1024))  # 100KB in bytes
+        segment_size = int((100 * 1024))  # 100KB in bytes
 
         with open(self.path, 'rb') as file:
             while True:
@@ -78,8 +77,5 @@ class IncomingFile(BaseFile):
             file.write(decompressed_segment)
         # Reset compressed_chunk for the next segment
         self.compressed_chunk = None
-
-
-
 
 

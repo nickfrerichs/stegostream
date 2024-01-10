@@ -16,6 +16,7 @@ class PeerConnection:
 
     def __init__(self, videoStream, shared_input, msg, args):
         self.msg = msg
+        self.args = args
         self.shared_input = shared_input
         self.videoStream = videoStream
         self.recvMessagesThread = None
@@ -356,7 +357,7 @@ class PeerConnection:
         input_id = random.randint(0, sys.maxsize)
         # Set the input_prompt
 
-        prompt = "Receive file from peer? Size: "+str(size/1024/1024)+" MB: "+", Name: "+filename_string+ "\nEnter valid path to receive file, or -N- to decline.\nPath: "
+        prompt = "Receive file from peer? Size: "+str(round(size/1024/1024),4)+" MB: "+", Name: "+filename_string+ "\nEnter valid path to receive file, or -N- to decline.\nPath: "
         self.msg.request_input(prompt)
         # Wait for response by user
         for attempt in range(30):
@@ -497,7 +498,7 @@ class PeerConnection:
             bin_flags = Flags.get_bin(Flags.SYN)
             filename_bytes = file.name.encode("utf-8")
             # Pack the values into a binary object using struct
-            binary_data = struct.pack(f'!HQ{len(filename_bytes)}s', file.id, file.size, filename_bytes)
+            binary_data = struct.pack(f'!HQ{len(filename_bytes)}s', file.id, round(file.size,4), filename_bytes)
 
             self.__queue_message(binary_data, channel, bin_flags)
 
