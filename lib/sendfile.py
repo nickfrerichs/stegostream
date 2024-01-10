@@ -45,7 +45,7 @@ class OutgoingFile(BaseFile):
 
 
     def __get_file_segments(self):
-        segment_size = (1024 * 1024) / 2  # 100KB in bytes
+        segment_size = int((1000 * 1024))  # 100KB in bytes
 
         with open(self.path, 'rb') as file:
             while True:
