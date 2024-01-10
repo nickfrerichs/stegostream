@@ -206,7 +206,7 @@ class VideoStream:
                 if image is None:
                     time.sleep(.25)
                     continue
-                if self.args.debug:
+                if self.args.debug > 0:
                     checksum = image_checksum(image)
                     if checksum != last_checksum:
                         self.write_debug_image(image, "send_image.png")

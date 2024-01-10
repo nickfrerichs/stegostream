@@ -294,7 +294,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Stegostream endpoint to connect to a peer and send data over video stream')
     # Adding a boolean flag (store_true means if the flag is present, the variable is set to True)
     parser.add_argument('--basic_output', action='store_true', help='Run with basic output')  
-    parser.add_argument('--debug', action='store_true', help='Debug mode')   
+    parser.add_argument('--debug', type=int, default=0, help='Debug mode 1 or 2')
     args = parser.parse_args()
 
     msg = AppMessages()
