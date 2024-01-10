@@ -3,7 +3,6 @@ import threading, queue
 import subprocess
 import time
 import cv2, numpy as np
-import copy, tempfile
 import random
 from .lockvar import LockVar
 from .config import Config
@@ -130,7 +129,7 @@ class VideoStream:
                 
                 self.recv_q.put(msg_data)
                 self.__clean_up_recv_image(file_path, start_time)
-                self.write_debug_image(image, f)
+                self.write_debug_image(image, "recv_image.png", 1)
                 self.last_new_image.set(image)
                 self.last_new_image_time.set(time.time())
                 
@@ -148,8 +147,6 @@ class VideoStream:
         with self.stats.lock:
             self.stats.var.recv_time += time.time()-start_time
 
-
-
     # Perform everything needed to establish an outbound video stream
     def initSend(self, nonce_int, rtmp_url):
         self.stream_nonce = self.get_nonce(nonce_int)
@@ -163,7 +160,7 @@ class VideoStream:
         def image_checksum(image):
             return np.sum(image)
         raw_fps = 10
-# FFmpeg command for RTMP streaming with filler audio
+        # FFmpeg command for RTMP streaming with filler audio
         ffmpeg_cmd_stream = [
             'ffmpeg',
             '-r', str(raw_fps),
@@ -209,7 +206,7 @@ class VideoStream:
                 if self.args.debug > 0:
                     checksum = image_checksum(image)
                     if checksum != last_checksum:
-                        self.write_debug_image(image, "send_image.png")
+                        self.write_debug_image(image, "send_image.png",1)
                         last_checksum = checksum
                     with self.stats.lock:
                         self.stats.var.send_time+=time.time()-start
@@ -222,7 +219,6 @@ class VideoStream:
             # This is the stream rate of the underlying video stream
             time.sleep(1/(raw_fps+(raw_fps*.1)))
 
-        cv2.destroyAllWindows()    
 
     def send(self, data):
         self.send_q.put(data)
@@ -256,21 +252,14 @@ class VideoStream:
         self.__setStatus()
         return self.status
     
-    def write_debug_image(self, image, name):
-        print("Write debug image")
+    def write_debug_image(self, image, name, level=0):
+        if self.args.debug < level:
+            return
+        self.msg.print("Write debug image")
         if os.path.exists(config.DEBUG_FILES_PATH) == False:
             os.makedirs(config.DEBUG_FILES_PATH)
         cv2.imwrite(os.path.join(config.DEBUG_FILES_PATH, name), image)
 
-    def displayLastImage(self):
-        image = self.last_new_image.get()
-
-        if image is not None:
-            # Save the image to a temporary file
-            temp_image_path = os.path.join(tempfile.gettempdir(), 'temp_image.jpg')
-            cv2.imwrite(temp_image_path, image)
-            self.msg.print("Displaying image from last valid packet")
-            subprocess.run(['xdg-open', temp_image_path])
 
     def get_nonce(self, val=None):
         if val is None:

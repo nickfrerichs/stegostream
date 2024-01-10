@@ -43,7 +43,6 @@ class OutgoingFile(BaseFile):
                     yield (0, chunk)  # Other chunks within a segment
           
 
-
     def __get_file_segments(self):
         segment_size = int((1000 * 1024))  # 100KB in bytes
 
@@ -53,16 +52,6 @@ class OutgoingFile(BaseFile):
                 if not segment:
                     break
                 yield segment
-
-
-    # I think ChatGPT added this to be cute. It can probably go away
-    # def read_file_in_chunks(file_path, chunk_size=1024):
-    #     with open(file_path, 'rb') as file:
-    #         while True:
-    #             chunk = file.read(chunk_size)
-    #             if not chunk:
-    #                 break  # End of file
-    #             yield chunk
 
 
 class IncomingFile(BaseFile):

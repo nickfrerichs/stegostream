@@ -11,7 +11,7 @@ import lib.lockvar
 from datetime import datetime
 import logging
 
-# Configure logging
+# Configure logging, used for debugging at times
 log_file_path = './error.log'
 logging.basicConfig(filename=log_file_path, level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -77,19 +77,15 @@ def main():
         time.sleep(.1)
 
 def process_user_input():
-    # Perform some action with the user input
-    #print("User pressed Enter. Processing input:", user_input)
-
-    # if user_input.startswith("initrecv "):
-    #     conn.initrecv()
 
     user_input = msg.user_input
 
-    # Waiting on user input, this must be it
+    # A thread is waiting on user input, gather it here
     if msg.input_prompt != None and msg.user_response == None:
         msg.put_response(user_input)
         return
 
+    # Handle standard input
     if user_input.startswith("init"):
         try:
             nonce = user_input.split(" ",1)[1]
@@ -102,24 +98,28 @@ def process_user_input():
         conn.initsend(int(nonce),config.SEND_VIDEO_URL)
         time.sleep(2)
         msg.print("\n\n")
+        return
 
     if user_input.startswith("send "):
         data = user_input.split(" ",1)[1]
         conn.send_text(data)
+        return
 
     if user_input.startswith("connect"):
         conn.connect()
+        return
 
     if user_input.startswith("status"):
         conn.printStatus(True)
-
-    if user_input.startswith("last_image"):
-        conn.displayLastImage()
+        return
 
     if user_input.startswith("send_file "):
         filepath = user_input.split(" ",1)[1]
         conn.send_file(filepath,2)
         msg.print("send_file called with "+filepath)
+        return
+
+    msg.print("Valid commands: init, connect, status, send, send_file")
 
 def display_status(stdscr):
     msg.update_statuses()
@@ -128,10 +128,7 @@ def display_status(stdscr):
 
     # Display user input area
     prompt = "Input: {}"
-    # if msg.input_prompt:
-    #     msg.status3 = msg.input_prompt
-    # else:
-    #     msg.status3 = "File Send Idle"
+
     stdscr.addstr(1, 0, prompt.format(msg.user_input))
     stdscr.hline(2, 0, '-', curses.COLS)
 
@@ -143,9 +140,6 @@ def display_status(stdscr):
 
     stdscr.hline(4, 0, '-', curses.COLS)
 
-    # Display responses to the user
-    #stdscr.addstr(3, 0, msg.response1)
-    #stdscr.addstr(4, 0, msg.response2)
     # Display last 5 messages
     messages_y = 5
     num_channels = msg.channel_count+1
@@ -247,12 +241,6 @@ class AppMessages:
     
     def get_input(self, prompt):
         with self.input_lock:
-            # print("=========")
-            # print("prompt:" +str(prompt))
-            # print("input_prompt:" +str(self.input_prompt))
-            # print(prompt == self.input_prompt)
-            # print("user_input: "+str(self.user_input))
-            # print("=========")
             if prompt != self.input_prompt:
                 return False
             if self.user_response:
@@ -292,9 +280,9 @@ class AppMessages:
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description='Stegostream endpoint to connect to a peer and send data over video stream')
-    # Adding a boolean flag (store_true means if the flag is present, the variable is set to True)
     parser.add_argument('--basic_output', action='store_true', help='Run with basic output')  
     parser.add_argument('--debug', type=int, default=0, help='Debug mode 1 or 2')
+    parser.add_argument('--simulate_packet_loss', type=int, default=0, help='Simulate packet loss, specify a percentage to randomly drop')
     args = parser.parse_args()
 
     msg = AppMessages()

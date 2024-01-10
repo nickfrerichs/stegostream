@@ -49,3 +49,11 @@ rtmp {
 - Basics of a "TCP-like" connection
   - Three way handshake
   - Sequence numbers with receive buffer
+
+
+#### Known issues/limitations to be addressed
+- Almost no graceful error handling (use --basic_output if something goes wrong)
+- Can't send more than 1 file per session
+- No error checking on path typed by peer receiving file, type carefully
+- Channel 0 (maintenance channel) does not recover from missing packets. (therefore --simulate_packet_loss flag does not effect this channel)
+- Stats may not be accurate, need to revisit
