@@ -291,15 +291,16 @@ class AppMessages:
 
 if __name__ == "__main__":
 
-    parser = argparse.ArgumentParser(description='Example script with a boolean flag.')
+    parser = argparse.ArgumentParser(description='Stegostream endpoint to connect to a peer and send data over video stream')
     # Adding a boolean flag (store_true means if the flag is present, the variable is set to True)
-    parser.add_argument('--basic_output', action='store_true', help='Run with basic output')    
+    parser.add_argument('--basic_output', action='store_true', help='Run with basic output')  
+    parser.add_argument('--debug', action='store_true', help='Debug mode')   
     args = parser.parse_args()
 
     msg = AppMessages()
     shared_input = lib.lockvar.LockVar({"id":None, "prompt":None, "response":None})
-    videoStream = lib.videostream.VideoStream(config.RECV_VIDEO_URL, lib.stegocodecs.rgb_grid.Codec,msg)
-    conn = lib.peerconnection.PeerConnection(videoStream, shared_input,msg)
+    videoStream = lib.videostream.VideoStream(config.RECV_VIDEO_URL,lib.stegocodecs.rgb_grid.Codec,msg,args)
+    conn = lib.peerconnection.PeerConnection(videoStream, shared_input,msg,args)
 
     if args.basic_output:
         purge_temp_files()

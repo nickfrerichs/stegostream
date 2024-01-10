@@ -14,7 +14,7 @@ from .flags import Flags
 
 class PeerConnection:
 
-    def __init__(self, videoStream, shared_input, msg):
+    def __init__(self, videoStream, shared_input, msg, args):
         self.msg = msg
         self.shared_input = shared_input
         self.videoStream = videoStream

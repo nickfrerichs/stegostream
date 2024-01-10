@@ -2,7 +2,7 @@ import os, shutil
 import threading, queue
 import subprocess
 import time
-import cv2
+import cv2, numpy as np
 import copy, tempfile
 import random
 from .lockvar import LockVar
@@ -12,8 +12,9 @@ config = Config()
 
 class VideoStream:
 
-    def __init__(self, video_url, codec, msg):
+    def __init__(self, video_url, codec, msg, args):
         self.msg = msg
+        self.args = args
         self.local_seq = 0
         self.remote_seq = 0
         self.codec = codec()
@@ -158,6 +159,9 @@ class VideoStream:
 
 
     def __sendThread(self):
+
+        def image_checksum(image):
+            return np.sum(image)
         raw_fps = 10
 # FFmpeg command for RTMP streaming with filler audio
         ffmpeg_cmd_stream = [
@@ -181,7 +185,7 @@ class VideoStream:
 
         ffmpeg_process_stream = subprocess.Popen(ffmpeg_cmd_stream, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 
-        last_image = None
+        last_checksum = 0
         image = self.codec.encode(self.stream_nonce)
         next_update = time.time()
         while True:
@@ -202,13 +206,14 @@ class VideoStream:
                 if image is None:
                     time.sleep(.25)
                     continue
-    #            if image is not last_image:
-                # ffmpeg_process_stream.stdin.write(image.tobytes())
-                # ffmpeg_process_stream.stdin.flush()
-                #cv2.imshow("Sending", image)
-                last_image = image
-                with self.stats.lock:
-                    self.stats.var.send_time+=time.time()-start
+                if self.args.debug:
+                    checksum = image_checksum(image)
+                    if checksum != last_checksum:
+                        self.write_debug_image(image, "send_image.png")
+                        last_checksum = checksum
+                    with self.stats.lock:
+                        self.stats.var.send_time+=time.time()-start
+
                 #cv2.waitKey(self.send_fps*1000)
                 
 
@@ -252,6 +257,7 @@ class VideoStream:
         return self.status
     
     def write_debug_image(self, image, name):
+        print("Write debug image")
         if os.path.exists(config.DEBUG_FILES_PATH) == False:
             os.makedirs(config.DEBUG_FILES_PATH)
         cv2.imwrite(os.path.join(config.DEBUG_FILES_PATH, name), image)
