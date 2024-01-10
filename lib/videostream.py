@@ -10,10 +10,6 @@ from .config import Config
 config = Config()
 
 
-FFMPEG = "/usr/bin/ffmpeg"
-BMP_FILES_PATH = "./temp"
-DEBUG_FILES_PATH = "./debug"
-
 class VideoStream:
 
     def __init__(self, video_url, codec, msg):
@@ -39,6 +35,10 @@ class VideoStream:
         self.send_fps = 1
         self.recv_fps = 2
         self.width, self.height = 1280, 720
+        if os.path.exists(config.BMP_FILES_PATH) == False:
+            os.makedirs(config.BMP_FILES_PATH)
+        if os.path.exists(config.DEBUG_FILES_PATH) == False:
+            os.makedirs(config.DEBUG_FILES_PATH)
 
 
     # Perform everything needed to connect to an inbound video stream
@@ -50,7 +50,7 @@ class VideoStream:
     def __recvThread(self):
 
         def ffmpeg_worker(source_url):
-            cmd = FFMPEG + " -y -i '"+source_url+"' -vf fps=1 ./"+BMP_FILES_PATH+"/out%d.bmp"
+            cmd = config.FFMPEG + " -y -i '"+source_url+"' -vf fps=1 ./"+config.BMP_FILES_PATH+"/out%d.bmp"
             self.ffmpeg_subprocess = subprocess.Popen(cmd, stderr=subprocess.DEVNULL, stdin=subprocess.PIPE, shell=True)
 
         # Start ffmpeg process to capture frames as .bmp files
@@ -70,14 +70,14 @@ class VideoStream:
                 continue
         
 
-        cmd = FFMPEG + " -y -i '"+source_url+"' -vf fps="+str(self.recv_fps)+" ./"+BMP_FILES_PATH+"/out%d.bmp"
+        cmd = config.FFMPEG + " -y -i '"+source_url+"' -vf fps="+str(self.recv_fps)+" ./"+config.BMP_FILES_PATH+"/out%d.bmp"
         self.ffmpeg_subprocess = subprocess.Popen(cmd, stderr=subprocess.DEVNULL, stdin=subprocess.PIPE, shell=True)
         
         total = 0
         correct = 1
 
         while True:
-            files = os.listdir(BMP_FILES_PATH)
+            files = os.listdir(config.BMP_FILES_PATH)
             with self.stats.lock:
                 self.stats.var.recv_backlog = len(files)
             for f in files:
@@ -86,7 +86,7 @@ class VideoStream:
                 if ".bmp" not in f:
                     continue
                 time.sleep(.1)
-                file_path = os.path.join(BMP_FILES_PATH,f)
+                file_path = os.path.join(config.BMP_FILES_PATH,f)
                 image = cv2.imread(file_path)
 
                 # Try to decode the image, msg_data will be binary data
@@ -252,9 +252,9 @@ class VideoStream:
         return self.status
     
     def write_debug_image(self, image, name):
-        if os.path.exists(DEBUG_FILES_PATH) == False:
-            os.makedirs(DEBUG_FILES_PATH)
-        cv2.imwrite(os.path.join(DEBUG_FILES_PATH, name), image)
+        if os.path.exists(config.DEBUG_FILES_PATH) == False:
+            os.makedirs(config.DEBUG_FILES_PATH)
+        cv2.imwrite(os.path.join(config.DEBUG_FILES_PATH, name), image)
 
     def displayLastImage(self):
         image = self.last_new_image.get()

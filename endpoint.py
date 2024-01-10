@@ -99,7 +99,7 @@ def process_user_input():
         if nonce.isdigit() == False:
             msg.print("You must specify a numeric value 0-255")
             return
-        conn.initsend(int(nonce),config.RTMP_URL)
+        conn.initsend(int(nonce),config.SEND_VIDEO_URL)
         time.sleep(2)
         msg.print("\n\n")
 
@@ -298,7 +298,7 @@ if __name__ == "__main__":
 
     msg = AppMessages()
     shared_input = lib.lockvar.LockVar({"id":None, "prompt":None, "response":None})
-    videoStream = lib.videostream.VideoStream(config.video_url, lib.stegocodecs.rgb_grid.Codec,msg)
+    videoStream = lib.videostream.VideoStream(config.RECV_VIDEO_URL, lib.stegocodecs.rgb_grid.Codec,msg)
     conn = lib.peerconnection.PeerConnection(videoStream, shared_input,msg)
 
     if args.basic_output:

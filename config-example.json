@@ -1,5 +1,8 @@
 {
-    "video_url" : "",
-    "YT_DLP" : "",
-    "RTMP_URL" : "rtmp://"
+    "RECV_VIDEO_URL" : "",
+    "SEND_VIDEO_URL" : "",
+    "YT_DLP" : "./env/bin/yt-dlp",
+    "FFMPEG" : "/usr/bin/ffmpeg",
+    "BMP_FILES_PATH" : "./temp",
+    "DEBUG_FILES_PATH" : "./debug"
 }
