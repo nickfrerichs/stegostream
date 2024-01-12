@@ -1,6 +1,5 @@
 # Stegostream
 Connect and send data between two parties sharing live video streams.
-.
 
 ## Usage instructions
 
