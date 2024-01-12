@@ -16,7 +16,7 @@ python3 stegostream_endpoint (use --basic_output to troubleshoot)
 ```
 
 #### Init with nonce
-Initialization starts with sending images to the configured video stream (blank payload with the configured nonce). A thread is immediately created to listen for the peers video. Both have a timeout period.
+Initialization starts with sending images to the configured video stream (blank payload with the configured nonce). A thread is immediately created to listen for the peer's video. Both have a timeout period.
 The nonce helps to make sure the peers match, both peers must use the same nonce value
 ```bash
 init <0-255>
