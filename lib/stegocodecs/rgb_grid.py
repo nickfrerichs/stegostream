@@ -3,194 +3,114 @@ import base64, crcmod
 import numpy as np
 import cv2
 
-
 DELIMITER = "-"
 VALID_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567="+DELIMITER
 DEBUG_IMAGE_PATH = "./temp/debug_images"
 
 # Set parameters for the image and box sizes
-width, height = 1280, 720
-num_boxes_x = 58
-num_boxes_y = 40
-gap_size = 5
-box_size_x = (width - (num_boxes_x - 1) * gap_size) // num_boxes_x
-box_size_y = (height - (num_boxes_y - 1) * gap_size) // num_boxes_y
-
-#box_size = min(box_size_x, box_size_y)
-
-background_color = (255, 255, 255)  # RGB values for the white background
-
-# Mapping from RGB to Base32
-
-mapping = {
-    "0,0,0"     : "A",
-    "23,0,0"    : "B",
-    "46,0,0"    : "C"
-}
-
 
 class Codec:
 
-    def __init__(self):
-        self.encode_map, self.decode_map, self.map_range = self.create_mapping(19, VALID_CHARS)
-        self.debug_mode = False
+    def __init__(self, msg, debug_mode=False, params=None):
+        self.width, self.height = 1280, 720
+        self.num_boxes_x = 40
+        self.num_boxes_y = 35
+        self.gap_size = 2
+
+        if params:
+            self.width = params["width"]
+            self.height = params["height"]
+            self.num_boxes_x = params["num_boxes_x"]
+            self.num_boxes_y = params["num_boxes_y"]
+            self.gap_size = params["gap_size"]
+
+        self.box_size_x = (self.width - (self.num_boxes_x - 1) * self.gap_size) // self.num_boxes_x
+        self.box_size_y = (self.height - (self.num_boxes_y - 1) * self.gap_size) //self.num_boxes_y
+
+        if (params and params["box_reduction"] == False):
+            self.box_reduction = 0
+        else:
+            self.box_reduction = int(self.box_size_y*.05)
+
+
+
+        self.background_color = (255, 255, 255)  # RGB values for the white background
+
+        self.encode_map, self.decode_map, self.map_range = self.create_mapping(50, VALID_CHARS)
+        self.debug_mode = debug_mode
+        self.msg = msg
+        self.write_one_debug_image = True
 
 
     def encode(self, raw_data, local_seq=None, remote_seq=None):
+
         base32_data = base64.b32encode(raw_data).decode('utf-8')
         crc = self.__getCRC(base32_data)
 
         line = (base32_data + DELIMITER + crc)
-        grid = np.ones((height, width, 3), dtype=np.uint8)
-        grid[:num_boxes_y * (box_size_y + gap_size), :num_boxes_x * (box_size_x + gap_size), :] = background_color
+        grid = np.ones((self.height, self.width, 3), dtype=np.uint8)
+        grid[:self.num_boxes_y * (self.box_size_y + self.gap_size), :self.num_boxes_x * (self.box_size_x + self.gap_size), :] = self.background_color
         i = 0
         j = 0
 
         for c in line:
 
             # This fills up the current box
-            grid[j:j + box_size_y, i:i + box_size_x, :] = self.encode_map[c]
+            grid[j:j + self.box_size_y, i:i + self.box_size_x, :] = self.encode_map[c]
 
-            j += box_size_y + gap_size
-            if j >= (num_boxes_y) * (box_size_y + gap_size):
+            j += self.box_size_y + self.gap_size
+            if j >= (self.num_boxes_y) * (self.box_size_y + self.gap_size):
                 j = 0
-                i += box_size_x + gap_size
-                if i >= (num_boxes_x) * (box_size_x + gap_size):
+                i += self.box_size_x + self.gap_size
+                if i >= (self.num_boxes_x) * (self.box_size_x + self.gap_size):
                     i = 0
 
         return grid
 
 
-    def decode(self, image, name=None):
+    def decode(self, raw_image, name=None):
 
-        x_offset = box_size_x+gap_size
-        y_offset = box_size_y+gap_size
+        image = cv2.resize(raw_image, (self.width, self.height))
 
-        def get_raw_data_old():
-
-            raw_data = ""
-            count=0
-
-            for i in range(0, num_boxes_x):
-                for j in range(0, num_boxes_y):
-                    count+=1
-                    box_name = str(i)+"_"+str(j)
-                    x1 = (i*x_offset)+2
-                    x2 = ((i+1)*x_offset)-(gap_size+2)
-                    y1 = (j*y_offset)+2
-                    y2 = ((j+1)*y_offset)-(gap_size+2)
-                    box = image[y1:y2, x1:x2]
-
-                    rgb = np.mean(box, axis=(0, 1))
-                    # Normalize the values so they match one of the possible values
-                    r = min(self.map_range, key=lambda x: abs(x - rgb[0]))
-                    g = min(self.map_range, key=lambda x: abs(x - rgb[1]))
-                    b = min(self.map_range, key=lambda x: abs(x - rgb[2]))
-
-
-                    # Exit if we encounter a white box, if this happens it's ether the end or something went wrong
-                    if (r == 255 and g == 255 and b == 255):
-                        return raw_data
-
-                    # This is valid data, it is not white
-                    if (r == 255 and g == 255 and b == 255) == False:
-                        if self.debug_mode:
-                            cv2.imwrite(os.path.join(DEBUG_IMAGE_PATH, box_name+"_debug_box.bmp"),box)
-                        index = ("(%d, %d, %d)") % (r, g, b)
-                        try:
-                            raw_data+=(self.decode_map[index])
-                        except KeyError:
-                            cv2.imwrite(os.path.join(DEBUG_IMAGE_PATH, "debug_image.bmp"),image)
-                            cv2.imwrite(os.path.join(DEBUG_IMAGE_PATH, "debug_box.bmp"),box)
-
-            return raw_data
+        x_offset = self.box_size_x+self.gap_size
+        y_offset = self.box_size_y+self.gap_size
         
         def get_raw_data():
-            # Set the dimensions of each box
-            #box_size_x = 10  # Replace with your actual box size
-            #box_size_y = 10  # Replace with your actual box size
-            #gap_size = 2  # Replace with your actual gap size
 
-            #num_boxes_x = (image.shape[1] - gap_size) // (box_size_x + gap_size)
-            #num_boxes_y = (image.shape[0] - gap_size) // (box_size_y + gap_size)
+            boxes = self.__get_decode_boxes(image)
 
-            x_offset = box_size_x + gap_size
-            y_offset = box_size_y + gap_size
+            boxes_avg = self.__get_box_averages(boxes)
+      
+            boxes_mapped = self.__snap_to_map_range(boxes_avg)
 
-            # Create an empty NumPy array to store the boxes
-            boxes = np.empty((num_boxes_x * num_boxes_y, box_size_y, box_size_x, 3), dtype=np.uint8)
 
-            # Populate the array with individual boxes
-            count = 0
-            for i in range(num_boxes_x):
-                for j in range(num_boxes_y):
-                    x1 = i * x_offset + 2
-                    x2 = (i + 1) * x_offset - (gap_size + 2)
-                    y1 = j * y_offset + 2
-                    y2 = (j + 1) * y_offset - (gap_size + 2)
+            raw_data=""
+            total_diff = 0
+            total = 0
 
-                    box = image[y1:y2, x1:x2]
+            for box in boxes_mapped:
+                r_value,g_value,b_value, diff = box
+                
+                # Exit if we encounter a white box, if this happens it's ether the end or something went wrong
+                if (r_value == 255 and g_value == 255 and b_value == 255):
+                    return raw_data, total_diff/total
+                total_diff += diff
+                total +=1
 
-                    # Ensure the box has the correct dimensions (crop if necessary)
-                    box = cv2.resize(box, (box_size_x, box_size_y))
+                # This is a valid box, it is not white
+                if (r_value == 255 and g_value == 255 and b_value == 255) == False:
+                    index = ("(%d, %d, %d)") % (r_value, g_value, b_value)
+                    try:
+                        raw_data+=(self.decode_map[index])
+                    except KeyError:
+                        self.msg.print("CODEC: key error in decode_map")
 
-                    # Assign the box to the boxes array
-                    boxes[count] = box
 
-                    count += 1
-            # Assume 'boxes' is a NumPy array of shape (num_boxes, height, width, 3)
-            # where the last dimension represents RGB values
-
-            # Calculate the mean RGB values for each box
-            mean_rgb_values = np.mean(boxes, axis=(1, 2))
-
-            # Find the closest values in self.map_range for each channel
-            r_indices = np.argmin(np.abs(mean_rgb_values[:, 0, None] - np.array(self.map_range)[None, :]), axis=1)
-            g_indices = np.argmin(np.abs(mean_rgb_values[:, 1, None] - np.array(self.map_range)[None, :]), axis=1)
-            b_indices = np.argmin(np.abs(mean_rgb_values[:, 2, None] - np.array(self.map_range)[None, :]), axis=1)
-
-            # Map the indices to the actual values
-            r_values = np.array(self.map_range)[r_indices]
-            g_values = np.array(self.map_range)[g_indices]
-            b_values = np.array(self.map_range)[b_indices]
-
-            # Reshape the values to be 2D arrays
-            r_values_2d = r_values.reshape((num_boxes_x, num_boxes_y))
-            g_values_2d = g_values.reshape((num_boxes_x, num_boxes_y))
-            b_values_2d = b_values.reshape((num_boxes_x, num_boxes_y))
-
-            raw_data = ""
-
-            # Loop through each column
-            for i in range(num_boxes_x):
-                # Loop through each row in the column
-                for j in range(num_boxes_y):
-                    box_name = str(i)+"_"+str(j)
-                    # Access the mapped values for the current box
-                    r_value = r_values_2d[i, j]
-                    g_value = g_values_2d[i, j]
-                    b_value = b_values_2d[i, j]
-
-                    # Exit if we encounter a white box, if this happens it's ether the end or something went wrong
-                    if (r_value == 255 and g_value == 255 and b_value == 255):
-                        return raw_data
-
-                    # This is valid data, it is not white
-                    if (r_value == 255 and g_value == 255 and b_value == 255) == False:
-                        if self.debug_mode:
-                            cv2.imwrite(os.path.join(DEBUG_IMAGE_PATH, box_name+"_debug_box.bmp"),box)
-                        index = ("(%d, %d, %d)") % (r_value, g_value, b_value)
-                        try:
-                            raw_data+=(self.decode_map[index])
-                        except KeyError:
-                            cv2.imwrite(os.path.join(DEBUG_IMAGE_PATH, "debug_image.bmp"),image)
-                            cv2.imwrite(os.path.join(DEBUG_IMAGE_PATH, "debug_box.bmp"),box)
-
-            return raw_data
+            return raw_data, total_diff/total
 
             
 
-        raw_data = get_raw_data()
+        raw_data, diff = get_raw_data()
 
 
         if self.debug_mode:
@@ -200,57 +120,163 @@ class Codec:
         try:
             data, crc = raw_data.split(DELIMITER,1)
         except Exception as e:
-            # log this instead? print("CRC Failed parsing: "+str(name))
-            self.__write_debug_images(image,name)
-            return (False, "".encode("utf-8"), (raw_data, image))
+            self.msg.print("CODEC: error parsing raw data "+str(name))
+            # self.__write_debug_images(image,name)
+            return (False, "".encode("utf-8"), (raw_data, image, diff))
 
 
         if crc == self.__getCRC(data):
-           # return (True, base64.b32decode(data).decode('utf-8'), (raw_data, image))
-            return (True, base64.b32decode(data), (raw_data, image))
+            return (True, base64.b32decode(data), (raw_data, image, diff))
         else:
-            # log this instead? print("CRC Failed: "+str(name))
-            self.__write_debug_images(image,name)
-            return (False, "".encode("utf-8"), (raw_data, image))
+            self.msg.print("CODEC: CRC error "+str(name))
+           # self.__write_debug_images(image,name)
+            return (False, "".encode("utf-8"), (raw_data, image, diff))
+
+
+    def get_debug_image(self, original_image, rgb_avg=None, rgb_map=None):
+
+        def draw_text(text, x, y,):
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.3
+            font_thickness = 1
+            color = (0, 0, 0)
+            cv2.putText(image, text, (x, y), font, font_scale, color, font_thickness, cv2.LINE_AA)
+
+
+        def draw_text_rect(start, size):
+            cv2.rectangle(image, (start[0], start[1]-int(size[1]*2)), (start[0] + size[0], start[1] + size[1]-5), (255, 255, 255), cv2.FILLED)
+
+
+
+        image = original_image.copy()
+
+        if rgb_avg is None:
+            rgb_avg = self.__get_box_averages(self.__get_decode_boxes(original_image))
+        if rgb_map is None:
+            rgb_map = self.__snap_to_map_range(rgb_avg)
+
+        count = 0
+        for i in range(self.num_boxes_x):
+            for j in range(self.num_boxes_y):
+                # Calculate box coordinates
+                x1 = i * (self.box_size_x + self.gap_size) + self.box_reduction
+                y1 = j * (self.box_size_y + self.gap_size) + self.box_reduction
+                x2 = x1 + self.box_size_x - 2 * self.box_reduction
+                y2 = y1 + self.box_size_y - 2 * self.box_reduction
+
+                # Draw rectangle on the original image
+                cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+                # Calculate text position for the first line (rgb_avg[count])
+                text_x = x1 - self.box_reduction + 10
+                text_y = y2 - 10  # Adjust this value for the vertical position of the text
+
+                # Draw white background for both lines
+                draw_text_rect((text_x, text_y),(80,10))
+                try:
+                    draw_text(f"({int(rgb_map[count][0])}, {int(rgb_map[count][1])}, {int(rgb_map[count][2])})", text_x+7, text_y)
+                    text_y -= 10 
+                    draw_text(f"({int(rgb_avg[count][0])}, {int(rgb_avg[count][1])}, {int(rgb_avg[count][2])})", text_x+7, text_y)
+                except ValueError:
+                    pass
+
+                count += 1
+
+
+        return image
+
+    def get_debug_image_old(self, original_image):
+        image = original_image.copy()
+
+        for i in range(self.num_boxes_x):
+            for j in range(self.num_boxes_y):
+                # Calculate box coordinates
+                x1 = i * (self.box_size_x + self.gap_size) + self.box_reduction
+                y1 = j * (self.box_size_y + self.gap_size) + self.box_reduction
+                x2 = x1 + self.box_size_x - 2 * self.box_reduction
+                y2 = y1 + self.box_size_y - 2 * self.box_reduction
+
+                # Draw rectangle on the original image
+                cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        return image
+
+
+    def __get_decode_boxes(self, image):
+        #boxes = np.empty((num_boxes_x * num_boxes_y, box_size_y - 2 * box_reduction, box_size_x - 2 * box_reduction, 3), dtype=np.uint8)
+
+        boxes = []
+
+        x_coords = np.arange(0, self.num_boxes_x * (self.box_size_x + self.gap_size) - self.gap_size, self.box_size_x + self.gap_size)
+        y_coords = np.arange(0, self.num_boxes_y * (self.box_size_y + self.gap_size) - self.gap_size, self.box_size_y + self.gap_size)
+
+        for i, x in enumerate(x_coords):
+            for j, y in enumerate(y_coords):
+                x1, x2 = x + self.box_reduction, x + self.box_size_x - self.box_reduction
+                y1, y2 = y + self.box_reduction, y + self.box_size_y - self.box_reduction
+
+                boxes.append(image[y1:y2, x1:x2])
+
+        return boxes
+
+    def __get_box_averages(self, boxes):
+        result_array = []
+
+        for box in boxes:
+            # Assuming 'boxes' is a NumPy array of shape (num_boxes, height, width, 3)
+            # where the last dimension represents RGB values
+
+            # Calculate the mean for each channel directly using NumPy
+            r_avg = np.mean(box[:, :, 0])
+            g_avg = np.mean(box[:, :, 1])
+            b_avg = np.mean(box[:, :, 2])
+
+            result_array.append((r_avg, g_avg, b_avg))
+
+        return result_array
+    
+    def __snap_to_map_range(self, box_averages):
+
+        result_array = []
+
+        # Convert the value_range to a NumPy array for easier calculations
+        value_range_np = np.array(self.map_range)
+
+        for rgb in box_averages:
+            diff = 0
+            # Convert the RGB tuple to a NumPy array
+            rgb_np = np.array(rgb)
+
+            # Find the index of the closest value in the range for each channel
+            r_index = np.argmin(np.abs(rgb_np[0] - value_range_np))
+            g_index = np.argmin(np.abs(rgb_np[1] - value_range_np))
+            b_index = np.argmin(np.abs(rgb_np[2] - value_range_np))
+
+            # Calculate the absolute differences and sum them up
+            diff = np.abs(rgb_np[0] - self.map_range[r_index]) + np.abs(rgb_np[1] - self.map_range[g_index]) + np.abs(rgb_np[2] - self.map_range[b_index])
+
+            # Snap each value to the closest one in the range
+            r_snap = value_range_np[r_index]
+            g_snap = value_range_np[g_index]
+            b_snap = value_range_np[b_index]
+
+            result_array.append((r_snap, g_snap, b_snap, diff))
+
+        return result_array
 
     
-    # This is untested after switching to ffmpeg for streaming directly
-    def __write_debug_images(self, image, name=None):
-        x_offset = box_size_x+gap_size
-        y_offset = box_size_y+gap_size
-        path = DEBUG_IMAGE_PATH
-        if name:
-            path = os.path.join(DEBUG_IMAGE_PATH,name.split(".")[0])
-        if os.path.exists(path) == False:
-            os.makedirs(path)
-        cv2.imwrite(os.path.join(path, "debug_image.bmp"),image)
-        for i in range(0, width):
-            for j in range(0, height):
-                name = str(i)+"_"+str(j)
-                x1 = (i*x_offset)+2
-                x2 = ((i+1)*x_offset)-(gap_size +2)
-                y1 = (j*y_offset)+2
-                y2 = ((j+1)*y_offset)-(gap_size +2)
-                box = image[y1:y2, x1:x2]
-                if box.size > 0:
-                    cv2.imwrite(os.path.join(path, name+"_debug_box.bmp"),box)
-
 
     # Create mapping
     def create_mapping(self, offset, chars):
         decode_map = {}
         encode_map = {}
-        map_range = [255,0]
+        map_range = [255, 0]
         rgb_values = []
 
-        for r in range(offset,255-offset,offset):
-            rgb_values.append((r,0,0))
+        for r in range(offset, 255 - offset, offset):
             map_range.append(r)
-        for g in range(offset,255-offset,offset):
-            rgb_values.append((0,g,0))
-        for b in range(offset,255-offset,offset):
-            rgb_values.append((0,0,b))
-        
+            for g in range(offset, 255 - offset, offset):
+                for b in range(offset, 255 - offset, offset):
+                    rgb_values.append((r, g, b))        
         if len(rgb_values) < len(chars):
             print("WARNING: Not enough RGB values to map characters to!")
 
@@ -284,16 +310,25 @@ class Codec:
     def enable_debug(self, value):
         self.debug_mode = value
 
+
 # ## Debugging
+# class Blah:
+#     def print(self, text):
+#         print(text)
+
+
 # if __name__ == '__main__':
-#     codec = Codec()
-#     print (codec.map_range)
-#     image_path = "./testimage.png"
-#     text = "This is a test"
-#     image = codec.encode(text.encode('utf-8'))
-#     cv2.imwrite(image_path, image)
-#     image = cv2.imread(image_path)
-#     result, data, raw = codec.decode(image)
+#     msg = Blah()
+#     codec = Codec(msg)
+#     print(codec.decode_map)
+#     for m, v in codec.decode_map.items():
+#         print(m+" : "+v)
+
+
+#     image = cv2.imread("")
+#     valid, data, raw_data = codec.decode(image)
 #     print(data)
+#     print(raw_data[2])
+
 
 

@@ -12,11 +12,18 @@ config = Config()
 class VideoStream:
 
     def __init__(self, video_url, codec, msg, args):
+        self.params = config.VIDEO_STREAM_PARAMS
+        self.send_fps = self.params["send_fps"]
+        self.recv_fps = self.params["recv_fps"]
+        self.video_fps = self.params["video_fps"]
+        self.width = self.params["video_width"]
+        self.height = self.params["video_height"]
+
         self.msg = msg
         self.args = args
         self.local_seq = 0
         self.remote_seq = 0
-        self.codec = codec()
+        self.codec = codec(msg,params=config.STEGO_CODEC_PARAMS)
         self.video_url = video_url
         self.sendThread = None
         self.recvThread = None
@@ -32,9 +39,7 @@ class VideoStream:
         self.stats = LockVar(VideoStreamStats())
         self.stream_nonce = None
         self.stream_nonce_match = False
-        self.send_fps = 1
-        self.recv_fps = 2
-        self.width, self.height = 1280, 720
+
         if os.path.exists(config.BMP_FILES_PATH) == False:
             os.makedirs(config.BMP_FILES_PATH)
         if os.path.exists(config.DEBUG_FILES_PATH) == False:
@@ -49,9 +54,6 @@ class VideoStream:
 
     def __recvThread(self):
 
-        def ffmpeg_worker(source_url):
-            cmd = config.FFMPEG + " -y -i '"+source_url+"' -vf fps=1 ./"+config.BMP_FILES_PATH+"/out%d.bmp"
-            self.ffmpeg_subprocess = subprocess.Popen(cmd, stderr=subprocess.DEVNULL, stdin=subprocess.PIPE, shell=True)
 
         # Start ffmpeg process to capture frames as .bmp files
         cmd = config.YT_DLP+ " -f best -g "+self.video_url
@@ -69,12 +71,9 @@ class VideoStream:
                 time.sleep(1)
                 continue
         
-
         cmd = config.FFMPEG + " -y -i '"+source_url+"' -vf fps="+str(self.recv_fps)+" ./"+config.BMP_FILES_PATH+"/out%d.bmp"
         self.ffmpeg_subprocess = subprocess.Popen(cmd, stderr=subprocess.DEVNULL, stdin=subprocess.PIPE, shell=True)
         
-        total = 0
-        correct = 1
 
         while True:
             files = os.listdir(config.BMP_FILES_PATH)
@@ -89,6 +88,10 @@ class VideoStream:
                 file_path = os.path.join(config.BMP_FILES_PATH,f)
                 image = cv2.imread(file_path)
 
+                self.write_debug_image(image, "last_ffmpeg_recv.png", 2)
+                if self.args.debug > 1:
+                    self.write_debug_image(self.codec.get_debug_image(image),"last_ffmpeg_recv_debug.png",2)
+                
                 # Try to decode the image, msg_data will be binary data
                 is_valid, msg_data, data = self.codec.decode(image,f)
 
@@ -96,6 +99,7 @@ class VideoStream:
                     self.stats.var.recv_total+=1
                     if is_valid:
                         self.stats.var.recv_valid+=1
+                        self.stats.var.recv_err_factor+=data[2]
                     else:
                         self.stats.var.recv_crc_fail+=1
 
@@ -129,7 +133,8 @@ class VideoStream:
                 
                 self.recv_q.put(msg_data)
                 self.__clean_up_recv_image(file_path, start_time)
-                self.write_debug_image(image, "recv_image.png", 1)
+                self.write_debug_image(image, "last_recv_valid.png", 1)
+                self.write_debug_image(self.codec.get_debug_image(image),"last_recv_valid_debug.png",1)
                 self.last_new_image.set(image)
                 self.last_new_image_time.set(time.time())
                 
@@ -159,29 +164,31 @@ class VideoStream:
 
         def image_checksum(image):
             return np.sum(image)
-        raw_fps = 10
-        # FFmpeg command for RTMP streaming with filler audio
+       
+
         ffmpeg_cmd_stream = [
             'ffmpeg',
-            '-r', str(raw_fps),
+            '-r', str(self.video_fps),
             '-s', f'{self.width}x{self.height}',
             '-f', 'rawvideo',
             '-pix_fmt', 'bgr24',
             '-i', 'pipe:0',
+            '-color_range', '1',
             '-f', 'lavfi',  # Use lavfi (audio filter) for audio input
             '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',  # Generate silent audio
             '-c:v', 'libx264',
-            '-pix_fmt', 'yuv420p',
             '-c:a', 'aac',
+            '-vf', 'scale='+str(self.width)+'x'+str(self.height)+':flags=bicubic,format=yuv444p,eq=gamma=1',
             '-map', '0:v:0',
             '-map', '1:a:0',
             '-f', 'flv',
-            '-g' , str(raw_fps*4),
+            '-g' , str(self.video_fps*4),
+            #"/home/nick/sample_out.mp4"
             self.send_rtmp_url
         ]
 
         ffmpeg_process_stream = subprocess.Popen(ffmpeg_cmd_stream, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-
+        #ffmpeg_process_stream = subprocess.Popen(ffmpeg_cmd_stream, stdin=subprocess.PIPE)
         last_checksum = 0
         image = self.codec.encode(self.stream_nonce)
         next_update = time.time()
@@ -206,18 +213,15 @@ class VideoStream:
                 if self.args.debug > 0:
                     checksum = image_checksum(image)
                     if checksum != last_checksum:
-                        self.write_debug_image(image, "send_image.png",1)
+                        self.write_debug_image(image, "last_send_image.png",1)
                         last_checksum = checksum
                     with self.stats.lock:
                         self.stats.var.send_time+=time.time()-start
-
-                #cv2.waitKey(self.send_fps*1000)
                 
-
             ffmpeg_process_stream.stdin.write(image.tobytes())
             ffmpeg_process_stream.stdin.flush()
             # This is the stream rate of the underlying video stream
-            time.sleep(1/(raw_fps+(raw_fps*.1)))
+            time.sleep(1/(self.video_fps+(self.video_fps*.1)))
 
 
     def send(self, data):
@@ -255,7 +259,7 @@ class VideoStream:
     def write_debug_image(self, image, name, level=0):
         if self.args.debug < level:
             return
-        self.msg.print("Write debug image")
+        self.msg.print("Write debug image",2)
         if os.path.exists(config.DEBUG_FILES_PATH) == False:
             os.makedirs(config.DEBUG_FILES_PATH)
         cv2.imwrite(os.path.join(config.DEBUG_FILES_PATH, name), image)
@@ -277,3 +281,4 @@ class VideoStreamStats:
         self.recv_new = 0
         self.recv_backlog = 0
         self.recv_nonce_fail = 0
+        self.recv_err_factor = 0

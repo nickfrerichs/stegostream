@@ -9,8 +9,14 @@ class Config:
             script_dir = os.path.dirname(os.path.abspath(__file__))
             config_path = os.path.join(script_dir, "../config.json")
 
-        with open(config_path, "r") as file:
-            data = json.load(file)
+            with open(config_path) as file:
+                lines = [line.strip() for line in file if not line.startswith('#')]
+                json_string = ''.join(lines)
 
-        for key, value in data.items():
-            setattr(self, key, value)
+                try:
+                    data = json.loads(json_string)
+                except json.JSONDecodeError as e:
+                    print(f"Error decoding JSON config file: {e}")
+
+            for key, value in data.items():
+                setattr(self, key, value)

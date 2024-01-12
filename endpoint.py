@@ -1,4 +1,4 @@
-import os, sys, glob
+import os, sys, glob, shutil
 import lib.stegocodecs.rgb_grid
 import lib.peerconnection
 import lib.videostream
@@ -10,6 +10,7 @@ from lib.config import Config
 import lib.lockvar
 from datetime import datetime
 import logging
+
 
 # Configure logging, used for debugging at times
 log_file_path = './error.log'
@@ -33,9 +34,7 @@ def curses_main(_stdscr):
 
 
     while True:
-
         status = conn.getStatus()
-
         display_status(stdscr)
 
         # Get user input
@@ -63,7 +62,6 @@ def curses_main(_stdscr):
 
 def main():
     while True:
-
         status = conn.getStatus()
         user_input = input(status+"> ")
         # if user_input.startswith("initrecv "):
@@ -100,7 +98,7 @@ def process_user_input():
         msg.print("\n\n")
         return
 
-    if user_input.startswith("send "):
+    if user_input.startswith("send_message "):
         data = user_input.split(" ",1)[1]
         conn.send_text(data)
         return
@@ -112,18 +110,40 @@ def process_user_input():
     if user_input.startswith("status"):
         conn.printStatus(True)
         return
+    
+    if user_input.startswith("verbose "):
+        try:
+            level = int(user_input.split(" ",1)[1])
+        except ValueError:
+            msg.print("You must specify 0 or 1")
+            return
+        if level < 0 or level > 1:
+            msg.print("You must specify 0 or 1")
+            return
+        msg.set_verbose(level)
+        return
 
     if user_input.startswith("send_file "):
         filepath = user_input.split(" ",1)[1]
         conn.send_file(filepath,2)
         msg.print("send_file called with "+filepath)
         return
-
-    msg.print("Valid commands: init, connect, status, send, send_file")
+                     
+    msg.print(" ")
+    msg.print_line()
+    msg.print(" Valid commands:")
+    msg.print("   verbose <0,1>        - send more output to the screen (default 0)")
+    msg.print("   init <0-255>         - initialize the video streams with peer, nonce must match peer")
+    msg.print("   connect              - begin connection handshake to establish a connection")
+    msg.print("   status               - print some stats to the screen")
+    msg.print("   send_message <text>  - send a text message to the connected peer")
+    msg.print("   send_file <path>     - send a file to the connected peer")
+    msg.print_line()
+    msg.print(" ")
 
 def display_status(stdscr):
     msg.update_statuses()
-
+    msg.update_video_stream_stats()
     stdscr.clear()
 
     # Display user input area
@@ -155,8 +175,13 @@ def display_status(stdscr):
     # Display statuses in the left bottom corner, left-justified
     width = 13
     status1_y, status2_y = curses.LINES - (2+num_channels) , curses.LINES - (1+num_channels)
+    backlog_text = ""
+
+    if msg.video_stream_stats and msg.video_stream_stats.recv_backlog > 10:        
+        backlog_text = ("==> Recv Backlog: "+str(msg.video_stream_stats.recv_backlog)+" <==").upper()
+
     try:
-        stdscr.addstr(status1_y, 0, "Video Stream: ".ljust(width)+msg.status["stream"])
+        stdscr.addstr(status1_y, 0, "Video Stream: ".ljust(width)+msg.status["stream"] +"  "+backlog_text)
         stdscr.addstr(status2_y, 0, "Peer Conn:    ".ljust(width)+msg.status["conn"])
         # Iterate through channel statuses
         for channel in range(num_channels):
@@ -187,8 +212,10 @@ def purge_temp_files():
 
 class AppMessages:
     def __init__(self):
+        self.video_stream_stats = None
+        self.video_stream_stats_update_time = 0
         self.channel_count = 2
-        self.text_message_wrap = 75
+        self.text_message_wrap = 90
         self.input_lock = threading.Lock()
         self.status_lock = threading.Lock()
         self.msg_lines = 25
@@ -197,6 +224,7 @@ class AppMessages:
         self.user_response = None
         self.response1 = ""
         self.response2 = ""
+        self.verbose = 1
         self.status = {"stream" : "IDLE", "conn" : "IDLE"}
         for i in range(self.channel_count+1):
             self.status[i] = "" 
@@ -204,7 +232,10 @@ class AppMessages:
         
 
 
-    def print(self, text):
+    def print(self, text, verbose=0):
+
+        if verbose > self.verbose:
+            return
 
         timestamp = datetime.now().strftime("%H:%M:%S")
         text = str(text)
@@ -227,15 +258,29 @@ class AppMessages:
 
             # Trim the list to keep only the last `msg_lines` messages
             self.last_messages = self.last_messages[:self.msg_lines]
+    def print_line(self, char="=", text=None):
+        if text:
+            pad = char * ((self.text_message_wrap-2 - len(text)) // 2)
+            line = f"{pad} {text} {pad}"
+        else:
+            line = char*(self.text_message_wrap-2)
+        self.print(line)
+
+    def print_banner(self, text, char="=", title=None):
+        if title:
+            title = title.upper()
+        self.print_line(char, title)
+        self.print(text)
+        self.print_line(char)
 
     def request_input(self, prompt):
         with self.input_lock:
             if self.input_prompt == None:
                 self.input_prompt = prompt
                 if args.basic_output:
-                    print("==================================================================")
-                    print(self.input_prompt)
-                    print("==================================================================")
+                    self.print_line()
+                    self.print(self.input_prompt)
+                    self.print_line()
                 return True
         return False
     
@@ -260,6 +305,10 @@ class AppMessages:
         with self.status_lock:
             self.status[index] = text
 
+    def set_verbose(self, level):
+        self.verbose = level
+        self.print("Verbose level set to "+str(level))
+
     def update_statuses(self):
         self.status[0] = str(conn.conn_status.var)
         for i in range(1,self.channel_count+1):
@@ -275,6 +324,20 @@ class AppMessages:
            # text += " Missing: "+str(len(conn.missing.var[i]))
 
             self.status[i]= text
+    def update_video_stream_stats(self):
+        if time.time() > self.video_stream_stats_update_time:
+            self.video_stream_stats = conn.videoStream.stats.get()
+            self.video_stream_stats_update_time = time.time()+2
+
+
+
+def check_terminal_size():
+    width, height = shutil.get_terminal_size()
+
+    # Check if the terminal size is too small
+    if height < 35 or width < 100:  # Adjust the minimum size as needed
+        return False
+    return True
 
 
 if __name__ == "__main__":
@@ -294,6 +357,8 @@ if __name__ == "__main__":
         purge_temp_files()
         main()
     else:
+        if check_terminal_size() == False:
+            sys.exit("Terminal window is not large enough, make it bigger or use --basic_output")
         os.system('clear')
         purge_temp_files()
         curses.wrapper(curses_main)

@@ -4,5 +4,21 @@
     "YT_DLP" : "./env/bin/yt-dlp",
     "FFMPEG" : "/usr/bin/ffmpeg",
     "BMP_FILES_PATH" : "./temp",
-    "DEBUG_FILES_PATH" : "./debug"
+    "DEBUG_FILES_PATH" : "./debug",
+    "STEGO_CODEC_PARAMS" : {
+        "width" : 1280,
+        "height" : 720,
+        "num_boxes_x" : 15,
+        "num_boxes_y" : 12,
+        "gap_size" : 2,
+        "box_reduction" : true
+    },
+    "VIDEO_STREAM_PARAMS" : {
+        "video_width" : 1280,
+        "video_height": 720,
+        "send_fps" : 1,
+        "recv_fps" : 2,
+        "video_fps" : 10,
+        "mtu" : 50
+    }
 }

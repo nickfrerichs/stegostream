@@ -28,18 +28,30 @@ class OutgoingFile(BaseFile):
         super().__init__(file_path)
 
 
-    def get_file_chunks(self, chunk_size=1200):
-        for segment in self.__get_file_segments():
+    def get_file_chunks(self, chunk_size=25):
+        start_flag = True
+
+        segments = list(self.__get_file_segments())  # Store segments in a list
+
+        for index, segment in enumerate(segments):
             compressed_segment = zlib.compress(segment)
+
+            last_segment = index == len(segments) - 1
 
             for i in range(0, len(compressed_segment), chunk_size):
                 chunk = compressed_segment[i:i + chunk_size]
-                if i == 0:
-                    yield (1, chunk)  # Start of a segment
+                if start_flag and i == 0:
+                    flag = 1  # Start of file and segment
+                    start_flag = False
+                elif i == 0:
+                    flag = 2  # Start of segment
                 elif i + chunk_size >= len(compressed_segment):
-                    yield (2, chunk)  # End of a segment
+                    flag = 4 if last_segment else 3  # End of file and segment or end of segment
                 else:
-                    yield (0, chunk)  # Other chunks within a segment
+                    flag = 0  # Middle chunk within a segment
+
+                yield (flag, chunk)
+
           
 
     def __get_file_segments(self):
@@ -62,9 +74,9 @@ class IncomingFile(BaseFile):
         
 
     def process_incoming_chunk(self, data, flag):
-        if flag == 1:  # Start of a segment
+        if flag == 1 or flag == 2:  # Start of a segment
             self.compressed_chunk = data
-        elif flag == 2:  # End of a segment
+        elif flag == 3 or flag == 4:  # End of a segment
             self.compressed_chunk += data
             self.process_segment()
         elif flag == 0:  # Other chunks within a segment
@@ -77,5 +89,4 @@ class IncomingFile(BaseFile):
             file.write(decompressed_segment)
         # Reset compressed_chunk for the next segment
         self.compressed_chunk = None
-
 
